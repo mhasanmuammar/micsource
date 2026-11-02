@@ -1348,7 +1348,13 @@ class MicSourceApp(Adw.Application):
         self._pref = dlg
 
         # ---- page 1: Startup & Panel --------------------------------------
-        page = Adw.PreferencesPage()
+        # Title + icon go on the page itself: Adw.PreferencesDialog renders
+        # one header switcher tab per page from these properties, and a
+        # page without them gets blank/broken-image tabs (user-visible
+        # glitch). Also shown in the Adw.PreferencesWindow sidebar.
+        page = Adw.PreferencesPage(
+            title="Startup & Panel",
+            icon_name="applications-system-symbolic")
         dlg.add(page)
 
         grp = Adw.PreferencesGroup(
@@ -1391,7 +1397,8 @@ class MicSourceApp(Adw.Application):
         grp.add(tray_row)
 
         # ---- page 2: Audio -------------------------------------------------
-        page2 = Adw.PreferencesPage()
+        page2 = Adw.PreferencesPage(
+            title="Audio", icon_name="audio-input-microphone-symbolic")
         dlg.add(page2)
 
         grp2 = Adw.PreferencesGroup(

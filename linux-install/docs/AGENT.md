@@ -255,7 +255,12 @@ from the tray menu's "Open Control Window".
   the main window), search enabled; pages **Startup & Panel** and
   **Audio** built from `Adw.PreferencesGroup` + HIG switch rows
   (`_make_switch_row()` prefers `Adw.SwitchRow`, falls back to
-  `Adw.ActionRow` + `Gtk.Switch`). Instant apply, no Save button:
+  `Adw.ActionRow` + `Gtk.Switch`). Each `Adw.PreferencesPage` sets
+  `title=` and `icon_name=` ("applications-system-symbolic" /
+  "audio-input-microphone-symbolic") *on the page*: the dialog renders
+  one header switcher tab per page from the page's own properties, and
+  a page added without them shows blank/broken-image tabs
+  (user-reported glitch). Instant apply, no Save button:
   each toggle runs its command off the main thread
   (`_run_toggle()` → `GLib.idle_add` back), toasts via
   `Adw.Toast` + `add_toast()` (logged as fallback), and the switch is
