@@ -2996,8 +2996,16 @@ const MicSourceToggle = GObject.registerClass({
         this.menu.addMenuItem(winItem);
 
         // Some shell point releases / themes indent the quick-toggle
-        // subtitle; pin it to the left edge to match the title.
-        this._subtitle.set_style('text-align: left; padding-left: 0;');
+        // subtitle; pin it to the left edge to match the title. The
+        // subtitle label lives on the *inner* QuickToggle (since GNOME 45
+        // QuickMenuToggle wraps one instead of subclassing it, so there
+        // is no this._subtitle on ourselves — the direct access crashed
+        // _init on GNOME 51). Climb the one level of widgets the shell
+        // owns; optional chaining keeps _init safe even if the shell
+        // re-lays out its internals again.
+        const innerToggle = this._box?.get_first_child();
+        this._subtitle = innerToggle?._subtitle ?? null;
+        this._subtitle?.set_style('text-align: left; padding-left: 0;');
 
         this._monitoring = false;   // monitor answered "status"
         this._device = false;       // phone link seen
@@ -3220,7 +3228,7 @@ export default class MicSourcePrefs extends ExtensionPreferences {
 }
 __PREFSEOF__
         cat > ""${GNOME_EXT_DIR}/metadata.json"" <<'__METADATAEOF__'
-{"uuid": "micsource-tile@micsource.local", "name": "MicSource Quick Settings Pill", "description": "MicSource status pill and expandable menu in the Quick Settings grid", "version": 4, "shell-version": ["47", "48", "49", "50", "51"], "__metaVersion__": 5}
+{"uuid": "micsource-tile@micsource.local", "name": "MicSource Quick Settings Pill", "description": "MicSource status pill and expandable menu in the Quick Settings grid", "version": 6, "shell-version": ["47", "48", "49", "50", "51"], "__metaVersion__": 6}
 __METADATAEOF__
     ok "GNOME quick settings pill installed: ${GNOME_EXT_DIR}"
     if have_cmd gnome-extensions; then

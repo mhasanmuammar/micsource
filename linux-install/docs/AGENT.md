@@ -146,7 +146,7 @@ The app (`fr.dzx.audiosource`) is an Android service that:
 11. `step_gnome_extension` — optional; writes `metadata.json`, `extension.js`,
    `prefs.js` under
    `~/.local/share/gnome-shell/extensions/micsource-tile@micsource.local/`.
-   Targets GNOME Shell 47+ (ES-module API, installer version 5) — a
+   Targets GNOME Shell 47+ (ES-module API, installer version 6) — a
    **quick settings pill** (GSConnect-style `QuickMenuToggle`) instead of
    the older `PanelMenu.Button` icon:
    - `MicSourceToggle` extends `QuickSettings.QuickMenuToggle`
@@ -183,7 +183,15 @@ The app (`fr.dzx.audiosource`) is an Android service that:
      even though clicks work (verified via the journal on Shell 51).
    - The pill subtitle label gets an inline `text-align: left;
      padding-left: 0` pin so title and subtitle share the left edge
-     across shell point releases/themes (user-observed indent).
+     across shell point releases/themes (user-observed indent). The
+     label belongs to the *inner* `QuickToggle` — since GNOME 45
+     `QuickMenuToggle` wraps one instead of subclassing it, and there
+     is no `this._subtitle` on the toggle itself (a direct access
+     crashed `_init` on Shell 51 with "can't access property
+     'set_style', this._subtitle is undefined"). Resolve it via
+     `this._box?.get_first_child()?._subtitle` and only ever touch it
+     with optional chaining (`?.set_style`), so a future shell
+     re-layout degrades to skipping the pin instead of killing `_init`.
    - Registered with
      `Main.panel.statusArea.quickSettings.addExternalIndicator(indicator)`
      — the older `Main.panel.addToStatusArea()` throws "Status indicator
