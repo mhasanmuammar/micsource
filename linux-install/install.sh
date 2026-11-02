@@ -811,6 +811,7 @@ AppIndicator/Ayatana client bindings are Gtk 3 only.
 """
 import configparser
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -1244,13 +1245,28 @@ class MicSourceApp(Adw.Application):
             try:
                 online = device_online()
                 forwarded = socket_forwarded() if online else False
-                device_name_str = ""
-                if online:
-                    rc, out_n, _err2 = run_adb(
-                        ["shell", "getprop", "ro.product.model"], timeout=6)
-                    device_name_str = out_n.strip() if rc == 0 else ""
                 service = self._service_state()
                 monitor = self._query_monitor()
+                # Device model name: prefer the monitor's already-resolved
+                # name — its probe chain (ro.product.marketname -> model ->
+                # ...) yields user-facing marketing names such as "Redmi A5"
+                # instead of the raw ro.product.model code ("25028RN03A"),
+                # and the monitor caches it per serial so probing stays
+                # one-per-connect. Fall back to our own getprop (marketname
+                # first, then model) only while the monitor is not running.
+                m = re.search(r"\bname=([^\n\r]+)", monitor)
+                device_name_str = m.group(1).strip() if m else ""
+                if online and not device_name_str:
+                    rc, out_n, _err2 = run_adb(
+                        ["shell", "getprop", "ro.product.marketname"],
+                        timeout=6)
+                    if rc == 0 and out_n.strip():
+                        device_name_str = out_n.strip()
+                    else:
+                        rc, out_n, _err2 = run_adb(
+                            ["shell", "getprop", "ro.product.model"],
+                            timeout=6)
+                        device_name_str = out_n.strip() if rc == 0 else ""
                 err = ""
             except Exception as exc:
                 online, forwarded, service, monitor, err = (
@@ -1268,7 +1284,9 @@ class MicSourceApp(Adw.Application):
             s.settimeout(2)
             s.connect(os.path.join(DATA_DIR, "micsource.sock"))
             s.sendall(b"status")
-            resp = s.recv(64).decode(errors="ignore").strip()
+            # 256-byte buffer: the status line can carry name=<model>, and
+            # 64 truncated it off the end (same fix the CLI got).
+            resp = s.recv(256).decode(errors="ignore").strip()
             s.close()
             return resp
         except Exception:

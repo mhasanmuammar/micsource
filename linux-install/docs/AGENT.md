@@ -274,12 +274,18 @@ from the tray menu's "Open Control Window".
   AyatanaAppIndicator client bindings are Gtk 3 only.
 - `Gtk.Application` (`application_id=local.micsource`), one `ApplicationWindow`.
 - Status block refreshed every 3 s in a background thread: device online +
-  forward state (adb), systemd unit state, the phone's model name (fetched
-  directly with `adb shell getprop ro.product.model` while online), and the
-  monitor's control-socket status (`_query_monitor()` → `status` →
-  `device=X forward=Y audio_seconds=N [name=<model>]`), applied with
-  `GLib.idle_add` (adb subprocesses never run on the Gtk main thread). The
-  **Device** row shows the model name when connected and known, else
+  forward state (adb), systemd unit state, and the monitor's control-socket
+  status (`_query_monitor()` → `status` → `device=X forward=Y
+  audio_seconds=N [name=<model>]`; recv buffer 256 bytes so `name=` is not
+  truncated), applied with `GLib.idle_add` (adb/socket never ran on the Gtk
+  main thread). The **Device** row prefers the monitor's already-resolved
+  `name=` (regex `name=([^\n\r]+)` — the model string may contain spaces);
+  that chain probes `ro.product.marketname` first, so it shows user-facing
+  names like "Redmi A5" instead of the raw `ro.product.model` code
+  ("25028RN03A"), and the monitor's per-serial cache keeps probing to
+  one-per-connect. Only while the monitor is not running (no `name=` in the
+  answer) does the app do its own `adb shell getprop` — again marketname
+  first, then model. It shows the model name when connected and known, else
   connected/disconnected; the error row
   is visible only while a poll error is present.
 - The window **cannot stream audio itself**; it is a status + control surface
@@ -556,8 +562,10 @@ replacement leaves the previous recording pipeline wedged).
   reports it as `name=<model>` in the `status` control-socket response; the
   pill subtitle prefers the model name ("Service — off" / model /
   "Disconnected" / "starting…"), the pills' menu Device row and the
-  control window's Device row show the model, and the CLI status passthrough
-  uses a 256-byte recv buffer.
+  control window's Device row show the model (the app parses `name=` out of
+  the monitor answer with a 256-byte recv and only falls back to its own
+  marketname/model getprop while the monitor is down), and the CLI status
+  passthrough uses a 256-byte recv buffer.
 - `micsource` CLI dispatcher (`step_cli`): start/stop/status/run/tray/
   install-apk/config/help, with `~/.local/bin` symlink and PATH detection.
 - Monitor gained a `--run` foreground mode backing the CLI's `run` command.
