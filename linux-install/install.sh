@@ -959,19 +959,22 @@ def start_device_service():
 
 
 def _make_switch_row(title, subtitle):
-    """Build a HIG switch row; return (row, get_active, set_active).
+    """Build a HIG switch row; return (row, watch, get_active, set_active).
 
     Prefers Adw.SwitchRow (libadwaita >= 1.4) and falls back to an
-    Adw.ActionRow with an embedded Gtk.Switch on older stacks.
+    Adw.ActionRow with an embedded Gtk.Switch on older stacks. `watch` is
+    the actor that owns the `active` property (the row itself for
+    SwitchRow, the Gtk.Switch for the fallback) — used to connect
+    notify::active.
     """
     if hasattr(Adw, "SwitchRow"):
         row = Adw.SwitchRow(title=title, subtitle=subtitle)
-        return row, row.get_active, row.set_active, True  # True = "activated" signal
+        return row, row, row.get_active, row.set_active
     row = Adw.ActionRow(title=title, subtitle=subtitle)
     sw = Gtk.Switch(valign=Gtk.Align.CENTER)
     row.add_suffix(sw)
     row.set_activatable_widget(sw)
-    return row, sw.get_active, sw.set_active, False  # "state-set" signal
+    return row, sw, sw.get_active, sw.set_active
 
 
 class MicSourceApp(Adw.Application):
@@ -1364,10 +1367,10 @@ class MicSourceApp(Adw.Application):
 
         # Auto-start service at login (systemd user unit).
         svc_ok = bool(shutil.which("systemctl")) and os.path.isfile(UNIT_FILE)
-        svc_row, svc_get, svc_set, svc_sig = _make_switch_row(
+        svc_row, svc_watch, svc_get, svc_set = _make_switch_row(
             "Auto-start Service at Login",
             "Runs the background audio service when you log in")
-        self._wire_toggle(svc_row, svc_get, svc_set, svc_sig,
+        self._wire_toggle(svc_row, svc_watch, svc_get, svc_set,
                           self._get_autostart, self._apply_autostart,
                           sensitive=svc_ok,
                           unavailable="systemd unit missing (re-run install.sh)")
@@ -1375,10 +1378,10 @@ class MicSourceApp(Adw.Application):
 
         # GNOME top-bar tile.
         gn_ok = bool(shutil.which("gnome-extensions"))
-        tile_row, tile_get, tile_set, tile_sig = _make_switch_row(
+        tile_row, tile_watch, tile_get, tile_set = _make_switch_row(
             "GNOME Top-bar Tile",
             "MicSource status and controls in the GNOME panel")
-        self._wire_toggle(tile_row, tile_get, tile_set, tile_sig,
+        self._wire_toggle(tile_row, tile_watch, tile_get, tile_set,
                           self._get_tile, self._apply_tile,
                           sensitive=gn_ok,
                           unavailable="gnome-extensions not available "
@@ -1387,10 +1390,10 @@ class MicSourceApp(Adw.Application):
 
         # Opt-in AppIndicator tray (KDE/XFCE/etc.; GNOME users use the tile).
         tray_ok = os.path.isfile(TRAY_PATH)
-        tray_row, tray_get, tray_set, tray_sig = _make_switch_row(
+        tray_row, tray_watch, tray_get, tray_set = _make_switch_row(
             "Tray Icon (AppIndicator)",
             "Legacy tray icon for KDE/XFCE/other desktops")
-        self._wire_toggle(tray_row, tray_get, tray_set, tray_sig,
+        self._wire_toggle(tray_row, tray_watch, tray_get, tray_set,
                           self._get_tray, self._apply_tray,
                           sensitive=tray_ok,
                           unavailable="tray not installed (re-run install.sh)")
@@ -1407,20 +1410,20 @@ class MicSourceApp(Adw.Application):
                         "next time the service starts")
         page2.add(grp2)
 
-        vmic_row, vmic_get, vmic_set, vmic_sig = _make_switch_row(
+        vmic_row, vmic_watch, vmic_get, vmic_set = _make_switch_row(
             "Virtual Microphone",
             "Expose the phone as a “phone-mic” input device for apps")
-        self._wire_toggle(vmic_row, vmic_get, vmic_set, vmic_sig,
+        self._wire_toggle(vmic_row, vmic_watch, vmic_get, vmic_set,
                           lambda: _cfg_bool("audio", "virtual_mic", True),
                           lambda on: (_cfg_set_bool("audio", "virtual_mic", on),
                                       "virtual-mic preference saved"),
                           sensitive=True, unavailable="")
         grp2.add(vmic_row)
 
-        spk_row, spk_get, spk_set, spk_sig = _make_switch_row(
+        spk_row, spk_watch, spk_get, spk_set = _make_switch_row(
             "Play Phone Audio to Speakers",
             "Also send the phone sound to the desktop speakers")
-        self._wire_toggle(spk_row, spk_get, spk_set, spk_sig,
+        self._wire_toggle(spk_row, spk_watch, spk_get, spk_set,
                           lambda: _cfg_bool("audio", "play_to_speakers", False),
                           lambda on: (_cfg_set_bool("audio", "play_to_speakers", on),
                                       "play-to-speakers preference saved"),
@@ -1430,44 +1433,76 @@ class MicSourceApp(Adw.Application):
         dlg.present(self.window) if isinstance(dlg, Adw.PreferencesDialog) \
             else dlg.present()
 
-    def _wire_toggle(self, row, get_active, set_active, uses_activated,
+    def _wire_toggle(self, row, watch, get_active, set_active,
                      getter, apply, *, sensitive, unavailable):
-        """Connect a switch row to a live getter/apply pair (instant apply)."""
-        set_active(bool(getter()))
+        """Connect a switch row to a live getter/apply pair (instant apply).
+
+        Activation is read from notify::active — *after* the user's toggle
+        has flipped the switch. The row-level "activated" signal on some
+        libadwaita versions emits before the internal switch commits, so
+        get_active() there reported the pre-click state and every tap
+        applied the inverse of what the user did (user-visible: switching
+        off showed "Setting turned on." and enabled the tile instead).
+        Programmatic writes (getter init, post-apply re-sync) are flagged
+        so the notify handler ignores our own updates.
+        """
+        self._toggle_inflight = getattr(self, "_toggle_inflight", {})
+        pending = {"flag": False}
+
+        def sync(value):
+            pending["flag"] = True
+            set_active(bool(value))
+
+        sync(getter())
         row.set_sensitive(sensitive)
         if not sensitive and unavailable:
             row.set_subtitle(row.get_subtitle() + " — " + unavailable)
 
-        def _invoke(state):
-            self._run_toggle(apply, state, row, set_active)
+        def on_notify(_watch, _pspec):
+            if pending["flag"]:
+                pending["flag"] = False   # consume our own programmatic write
+                return
+            if self._toggle_inflight.get(id(row)):
+                return  # swallow extra clicks while an apply is in flight
+            state = bool(get_active())    # fresh, post-flip state
+            self._toggle_inflight[id(row)] = True
+            self._run_toggle(apply, state, row, sync, getter)
 
-        if uses_activated:
-            row.connect("activated",
-                        lambda r: _invoke(r.get_active()))
-        else:
-            row.connect("state-set",
-                        lambda _sw, state: (_invoke(state), False)[1])
+        watch.connect("notify::active", on_notify)
 
-    def _run_toggle(self, apply, state, row, set_active):
-        """Apply a toggle off the main thread; revert + toast on failure."""
+    def _run_toggle(self, apply, state, row, sync, getter):
+        """Apply a toggle off the main thread; re-sync + toast on truth.
+
+        The getter runs *after* the apply so the switch is set to the
+        verified state — a click that the shell merely accepted without
+        honouring (rc=0, no effect) can never leave a lying switch.
+        """
 
         def worker():
             try:
                 ok, msg = apply(bool(state))
             except Exception as exc:  # noqa: BLE001
                 ok, msg = False, str(exc)
-            GLib.idle_add(self._toggle_done, ok, msg, state, row, set_active)
+            final = bool(state)
+            try:
+                final = bool(getter())
+            except Exception:
+                pass
+            GLib.idle_add(self._toggle_done, ok, msg, final, row, sync)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _toggle_done(self, ok, msg, state, row, set_active):
-        if ok:
-            self._toast("Setting turned on." if state else "Setting turned off.")
-            self.log_line(f"setting applied: {msg or 'ok'}")
+    def _toggle_done(self, ok, msg, final, row, sync):
+        self._toggle_inflight.pop(id(row), None)
+        sync(final)  # truth wins, in both directions
+        if not ok:
+            self._toast(f"Could not apply: {msg or 'unknown error'}")
+            self.log_line(f"setting FAILED: {msg or 'unknown error'} "
+                          f"(state now: {'on' if final else 'off'})")
             return False
-        set_active(not state)  # revert the switch
-        self._toast(f"Could not apply: {msg or 'unknown error'}")
-        self.log_line(f"setting FAILED: {msg or 'unknown error'}")
+        self._toast("Setting turned on." if final else "Setting turned off.")
+        self.log_line(f"setting applied: {msg or 'ok'} "
+                      f"(state now: {'on' if final else 'off'})")
         return False
 
     # -- per-toggle getters/apply (run in worker threads) -----------------
@@ -1502,8 +1537,23 @@ class MicSourceApp(Adw.Application):
         rc, out = _run_cmd(args)
         if rc != 0:
             return False, out or "gnome-extensions failed"
-        return True, ("top-bar tile enabled" if on
-                      else "top-bar tile disabled")
+        # rc=0 only means gnome-shell accepted the state change; it applies
+        # asynchronously. Confirm before claiming success (reports of the
+        # switch leaving the tile in the wrong state).
+        for _ in range(6):
+            if self._get_tile() is on:
+                return True, ("top-bar tile enabled" if on
+                              else "top-bar tile disabled")
+            time.sleep(0.3)
+        # May have raced the shell; nudge once and confirm again.
+        _run_cmd(args)
+        for _ in range(6):
+            if self._get_tile() is on:
+                return True, ("top-bar tile enabled" if on
+                              else "top-bar tile disabled")
+            time.sleep(0.3)
+        return False, ("gnome-shell did not confirm the tile is "
+                       + ("on" if on else "off") + " within ~3 s")
 
     def _get_tray(self):
         return os.path.isfile(TRAY_DESKTOP)

@@ -263,8 +263,32 @@ from the tray menu's "Open Control Window".
   (user-reported glitch). Instant apply, no Save button:
   each toggle runs its command off the main thread
   (`_run_toggle()` → `GLib.idle_add` back), toasts via
-  `Adw.Toast` + `add_toast()` (logged as fallback), and the switch is
-  reverted when the command fails. Rows: Auto-start Service (systemctl
+  `Adw.Toast` + `add_toast()` (logged as fallback). Toggle state
+  machine (all switches), built after a user report of inverted
+  applies and a lying switch:
+  - Activation is read from **notify::active** on `_make_switch_row()`'s
+    watch actor (row for `Adw.SwitchRow`, the embedded `Gtk.Switch` for
+    the fallback), i.e. *after* the user's toggle flipped the switch.
+    The row-level `activated` signal on some libadwaita versions emits
+    before the internal switch commits, so `get_active()` there
+    reported the pre-click state and every tap applied the inverse of
+    the click (toast said "Setting turned **on**" while switching off,
+    and enabled the tile instead).
+  - Programmatic writes (getter init, post-apply sync) set a
+    per-row suppression flag the notify handler consumes, so our own
+    `set_active()` cannot re-trigger an apply.
+  - An in-flight lock (`_toggle_inflight`) swallows extra activations
+    while an apply is running; the worker then runs the getter *after*
+    the command and `_toggle_done()` sets the switch to the **verified**
+    state — a click the shell accepted without honouring can never
+    leave a lying switch. Toast text and the Activity-log line
+    (`setting applied/FAILED: … (state now: on|off)`) describe the
+    verified state.
+  - The tile toggle additionally polls `gnome-extensions info` for up
+    to ~3 s after the command (one nudge retry) before claiming
+    success, because rc=0 only means the user-state change was
+    accepted.
+  Rows: Auto-start Service (systemctl
   user enable/disable, sensitive only when the unit exists),
   GNOME Top-bar Tile (`gnome-extensions enable/disable
   micsource-tile@micsource.local`, parsed from `gnome-extensions info`),
