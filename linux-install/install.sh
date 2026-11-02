@@ -1468,11 +1468,9 @@ class MicSourceApp(Adw.Application):
             finally:
                 watch.handler_unblock_by_func(on_notify)
 
-        sync(getter())
-        row.set_sensitive(sensitive)
-        if not sensitive and unavailable:
-            row.set_subtitle(row.get_subtitle() + " — " + unavailable)
-
+        # Handlers must be connected *before* the first programmatic
+        # sync: handler_block_by_func() raises for unconnected handlers,
+        # which killed the whole preferences dialog (user report).
         watch.connect("notify::active", on_notify)
         # Second click source (row activation may emit before the switch
         # commits on some libadwaita versions; the deferred read below
@@ -1480,6 +1478,11 @@ class MicSourceApp(Adw.Application):
         row.connect("activated",
                     lambda _r: self._begin_toggle(row, get_active, apply,
                                                   getter, sync))
+
+        sync(getter())
+        row.set_sensitive(sensitive)
+        if not sensitive and unavailable:
+            row.set_subtitle(row.get_subtitle() + " — " + unavailable)
 
     def _begin_toggle(self, row, get_active, apply, getter, sync):
         if self._toggle_inflight.get(id(row)):
