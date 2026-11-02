@@ -265,23 +265,30 @@ from the tray menu's "Open Control Window".
   (`_run_toggle()` → `GLib.idle_add` back), toasts via
   `Adw.Toast` + `add_toast()` (logged as fallback). Toggle state
   machine (all switches), built after a user report of inverted
-  applies and a lying switch:
-  - Activation is read from **notify::active** on `_make_switch_row()`'s
-    watch actor (row for `Adw.SwitchRow`, the embedded `Gtk.Switch` for
-    the fallback), i.e. *after* the user's toggle flipped the switch.
-    The row-level `activated` signal on some libadwaita versions emits
-    before the internal switch commits, so `get_active()` there
-    reported the pre-click state and every tap applied the inverse of
+  applies, a lying switch and a dead switch:
+  - Clicks are read through a **one-tick-deferred fresh
+    `get_active()`** (`_begin_toggle()` → `GLib.idle_add` →
+    `_deferred_toggle()`), not synchronously inside the triggering
+    signal: some libadwaita versions emit the row's `activated`
+    *before* the internal switch commits, so a synchronous read there
+    returned the pre-click state and every tap applied the inverse of
     the click (toast said "Setting turned **on**" while switching off,
     and enabled the tile instead).
-  - Programmatic writes (getter init, post-apply sync) set a
-    per-row suppression flag the notify handler consumes, so our own
-    `set_active()` cannot re-trigger an apply.
-  - An in-flight lock (`_toggle_inflight`) swallows extra activations
-    while an apply is running; the worker then runs the getter *after*
-    the command and `_toggle_done()` sets the switch to the **verified**
-    state — a click the shell accepted without honouring can never
-    leave a lying switch. Toast text and the Activity-log line
+  - **Two click sources** — `notify::active` on the watch actor (row
+    for `Adw.SwitchRow`, embedded `Gtk.Switch` for the fallback) plus
+    row `activated` as a belt-and-braces fallback — both funnel into
+    `_begin_toggle()`; an in-flight lock (`_toggle_inflight`) makes the
+    duplicate harmless and swallows extra activations while an apply
+    is running.
+  - Programmatic writes (getter init, post-apply sync) **block the
+    notify handler** during `set_active()` (`handler_block_by_func`) —
+    a one-shot "consume next notify" flag latched forever when the
+    value already matched the switch (no notify fires then), silently
+    eating the user's next real click (second user report).
+  - The worker runs the getter *after* the command and
+    `_toggle_done()` sets the switch to the **verified** state — a
+    click the shell accepted without honouring can never leave a
+    lying switch. Toast text and the Activity-log line
     (`setting applied/FAILED: … (state now: on|off)`) describe the
     verified state.
   - The tile toggle additionally polls `gnome-extensions info` for up

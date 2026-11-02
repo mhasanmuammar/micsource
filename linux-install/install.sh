@@ -1437,38 +1437,64 @@ class MicSourceApp(Adw.Application):
                      getter, apply, *, sensitive, unavailable):
         """Connect a switch row to a live getter/apply pair (instant apply).
 
-        Activation is read from notify::active — *after* the user's toggle
-        has flipped the switch. The row-level "activated" signal on some
-        libadwaita versions emits before the internal switch commits, so
-        get_active() there reported the pre-click state and every tap
-        applied the inverse of what the user did (user-visible: switching
-        off showed "Setting turned on." and enabled the tile instead).
-        Programmatic writes (getter init, post-apply re-sync) are flagged
-        so the notify handler ignores our own updates.
+        Clicks are read through a one-tick-deferred fresh `get_active()`,
+        not from the triggering signal: some libadwaita versions emit
+        `activated` before the internal switch commits, so a synchronous
+        read there returned the pre-click state and every tap applied
+        the inverse of the click (user-visible: switching off said
+        "Setting turned on." and enabled the tile instead).
+        Programmatic writes (getter init, post-apply re-sync) block the
+        notify handler for the duration — one-shot "consume next notify"
+        flags latch forever when the value already matches the switch
+        (no notify fires then), which silently ate the user's next real
+        click (switch reacted to nothing at all).
+
+        Both click sources (notify::active and row `activated`) funnel
+        into `_begin_toggle()`; the in-flight lock makes the duplicate
+        harmless — the scheduled deferred read applies the first commit
+        only, and extra clicks while an apply is running are swallowed.
         """
         self._toggle_inflight = getattr(self, "_toggle_inflight", {})
-        pending = {"flag": False}
+
+        def on_notify(_watch, _pspec):
+            self._begin_toggle(row, get_active, apply, getter, sync)
 
         def sync(value):
-            pending["flag"] = True
-            set_active(bool(value))
+            # Programmatic write: block our own notify handler while the
+            # property is set, then unblock. No latch, no stale flag.
+            watch.handler_block_by_func(on_notify)
+            try:
+                set_active(bool(value))
+            finally:
+                watch.handler_unblock_by_func(on_notify)
 
         sync(getter())
         row.set_sensitive(sensitive)
         if not sensitive and unavailable:
             row.set_subtitle(row.get_subtitle() + " — " + unavailable)
 
-        def on_notify(_watch, _pspec):
-            if pending["flag"]:
-                pending["flag"] = False   # consume our own programmatic write
-                return
-            if self._toggle_inflight.get(id(row)):
-                return  # swallow extra clicks while an apply is in flight
-            state = bool(get_active())    # fresh, post-flip state
-            self._toggle_inflight[id(row)] = True
-            self._run_toggle(apply, state, row, sync, getter)
-
         watch.connect("notify::active", on_notify)
+        # Second click source (row activation may emit before the switch
+        # commits on some libadwaita versions; the deferred read below
+        # makes its ordering irrelevant). The in-flight lock coalesces.
+        row.connect("activated",
+                    lambda _r: self._begin_toggle(row, get_active, apply,
+                                                  getter, sync))
+
+    def _begin_toggle(self, row, get_active, apply, getter, sync):
+        if self._toggle_inflight.get(id(row)):
+            return  # extra activation while an apply is running — swallow
+        self._toggle_inflight[id(row)] = True
+        GLib.idle_add(self._deferred_toggle, row, get_active, apply,
+                      getter, sync)
+
+    def _deferred_toggle(self, row, get_active, apply, getter, sync):
+        # One main-loop tick after the click: the switch has committed
+        # its flip, so get_active() is the post-click state regardless of
+        # signal ordering on this libadwaita version.
+        state = bool(get_active())
+        self._run_toggle(apply, state, row, sync, getter)
+        return False
 
     def _run_toggle(self, apply, state, row, sync, getter):
         """Apply a toggle off the main thread; re-sync + toast on truth.
