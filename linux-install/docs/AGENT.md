@@ -383,17 +383,30 @@ from the tray menu's "Open Control Window".
 
 - Python 3, PyGObject (Gtk 3.0, with AppIndicator3 or AyatanaAppIndicator3
   0.1 aliased to `AppIndicator3`).
-- If `AppIndicator3` (or PyGObject) cannot be imported, the tray replaces
-  itself (`os.execvp`) with `micsource-app.py`, so a tray-less desktop still
-  gets the control window instead of a silent exit.
+- If `AppIndicator3` (or PyGObject) cannot be imported, the tray **logs the
+  missing-binding error to `~/.local/share/micsource/tray.log` and exits
+  1**. It used to `os.execvp` into `micsource-app.py` "as a fallback" —
+  that literally spawned an extra control window on every tray toggle
+  (user report), so an explicit tray launch must never silently become a
+  different program. The app's toggle now preflights the bindings instead
+  (see below).
 - Icon: `micsource` (installed SVG) with fallback `audio-input-microphone`.
 - Tray script stays on Gtk 3 and tries `AppIndicator3` first, falling back
   to `AyatanaAppIndicator3` aliased as `AppIndicator3` (identical API).
   The tray is **opt-in**: `install.sh --with-tray` keeps the old behaviour
   (install-time binding offer + XDG autostart entry at
   `~/.config/autostart/micsource-tray.desktop`). Otherwise the control
-  window's Preferences toggle (Startup & Panel → Tray Icon) writes/removes
-  the autostart entry and spawns/kills `micsource tray`.
+  window's Preferences toggle (Startup & Panel → Tray Icon)
+  - prefights the bindings in a **subprocess** (`_tray_bindings_ok()` —
+    `Gtk 3.0` + AppIndicator/Ayatana import; Gtk 3 is never imported into
+    the app's own Gtk 4 process) and fails with the exact packages
+    (`gir1.2-gtk-3.0` + `gir1.2-ayatanaappindicator3-0.1`) when missing,
+  - adds a `_tray_display_hint()` warning when the desktop is GNOME
+    without the `appindicatorsupport@rgcjonas.gmail.com` extension
+    (GNOME has no native StatusNotifier area — without that extension
+    the icon is invisible even when the tray process runs fine),
+  - then writes/removes the autostart entry and spawns/kills
+    `micsource tray`.
 - Menu: Status (read-only), Start Service, Stop Service (both spawn
   `[CLI_PATH, "start"|"stop"]` — `CLI_PATH` = the data-dir CLI, so the CLI's
   systemd/no-systemd logic is reused), Open Control Window (spawns

@@ -1591,11 +1591,63 @@ class MicSourceApp(Adw.Application):
         return False, ("gnome-shell did not confirm the tile is "
                        + ("on" if on else "off") + " within ~3 s")
 
+    # -- tray helpers (probe in a separate process; Gtk 3 must never be
+    # imported into this Gtk 4 process) -----------------------------------
+    TRAY_PROBE = (
+        "import gi\n"
+        "gi.require_version('Gtk', '3.0')\n"
+        "from gi.repository import Gtk  # noqa\n"
+        "try:\n"
+        "    gi.require_version('AppIndicator3', '0.1')\n"
+        "    from gi.repository import AppIndicator3  # noqa\n"
+        "except (ImportError, ValueError):\n"
+        "    gi.require_version('AyatanaAppIndicator3', '0.1')\n"
+        "    from gi.repository import AyatanaAppIndicator3  # noqa\n")
+
+    def _tray_bindings_ok(self):
+        """Gtk 3 + an AppIndicator client binding importable? Probed in a
+        subprocess."""
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", self.TRAY_PROBE],
+                capture_output=True, text=True, timeout=10)
+            return proc.returncode == 0
+        except Exception:
+            return False
+
+    def _tray_display_hint(self):
+        """Warning for desktops needing extra bits to *render* the icon
+        (GNOME has no native StatusNotifier area — the KStatusNotifier /
+        AppIndicator shell extension is required)."""
+        if "GNOME" not in os.environ.get("XDG_CURRENT_DESKTOP", ""):
+            return ""
+        candidates = (
+            os.path.expanduser("~/.local/share/gnome-shell/extensions/"
+                               "appindicatorsupport@rgcjonas.gmail.com"),
+            "/usr/share/gnome-shell/extensions/"
+            "appindicatorsupport@rgcjonas.gmail.com")
+        for path in candidates:
+            if os.path.isdir(path):
+                return ""
+        return ("on GNOME the icon also needs the KStatusNotifier/"
+                "AppIndicator shell extension")
+
     def _get_tray(self):
         return os.path.isfile(TRAY_DESKTOP)
 
     def _apply_tray(self, on):
         if on:
+            # Preflight: with the bindings missing, the tray script cannot
+            # start at all — previously that failure was invisible (the
+            # spawn rc still read as success, no icon appeared, and the
+            # script's own legacy fallback even opened a second control
+            # window). Fail here with the exact packages instead.
+            if not self._tray_bindings_ok():
+                return False, (
+                    "AppIndicator bindings missing — install "
+                    "gir1.2-gtk-3.0 and gir1.2-ayatanaappindicator3-0.1 "
+                    "(or re-run install.sh; it prints the exact packages)")
+            hint = self._tray_display_hint()
             os.makedirs(os.path.dirname(TRAY_DESKTOP), exist_ok=True)
             desktop = (
                 "[Desktop Entry]\n"
@@ -1619,7 +1671,8 @@ class MicSourceApp(Adw.Application):
                                  start_new_session=True)
             except Exception as exc:  # noqa: BLE001
                 return False, f"cannot start tray: {exc}"
-            return True, "tray icon enabled (autostart entry written)"
+            return True, ("tray icon enabled (autostart entry written)"
+                          + (f" — {hint}" if hint else ""))
         try:
             os.remove(TRAY_DESKTOP)
         except FileNotFoundError:
@@ -1932,14 +1985,21 @@ try:
         gi.require_version("AyatanaAppIndicator3", "0.1")
         from gi.repository import AyatanaAppIndicator3 as AppIndicator3  # noqa
 except Exception as exc:  # Gtk 3 / PyGObject / no appindicator binding
-    # Fall back to the desktop control window instead of dying silently.
-    _app = os.path.join(os.path.expanduser("~/.local/share/micsource"),
-                        "micsource-app.py")
+    # Do NOT fall back to the control window here: an explicit tray
+    # launch must never silently become a second app window (user
+    # report: toggling the tray preference spawned a window). Log the
+    # missing-binding error and exit so the preferences toggle can
+    # surface it instead.
+    _logf = os.path.join(
+        os.path.expanduser("~/.local/share/micsource"), "tray.log")
+    try:
+        with open(_logf, "a") as fh:
+            fh.write(f"tray indicator unavailable: {exc}\n")
+    except OSError:
+        pass
     print(f"[micsource-tray] tray indicator unavailable ({exc})", flush=True)
-    if os.path.isfile(_app):
-        print("[micsource-tray] opening the MicSource control window instead",
-              flush=True)
-        os.execvp("python3", ["python3", _app])  # replace this process
+    print("[micsource-tray] install gir1.2-gtk-3.0 and "
+          "gir1.2-ayatanaappindicator3-0.1 (see README)", flush=True)
     raise SystemExit(1)
 
 APP_ID = "micsource"
