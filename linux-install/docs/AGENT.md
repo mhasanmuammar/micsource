@@ -298,7 +298,13 @@ from the tray menu's "Open Control Window".
   Rows: Auto-start Service (systemctl
   user enable/disable, sensitive only when the unit exists),
   GNOME Top-bar Tile (`gnome-extensions enable/disable
-  micsource-tile@micsource.local`, parsed from `gnome-extensions info`),
+  micsource-tile@micsource.local`; getter maps **only
+  `State: ACTIVE*` to on** — `INACTIVE` (what GNOME 45+ prints after a
+  disable), `DISABLED`, `ERROR`, `OUT OF DATE`, `UNINSTALLED`,
+  `INITIALIZED` are all off; the old point-blacklist missed `INACTIVE`
+  and reported a *hidden* tile as on, which desynced the switch and
+  failed every verified re-sync — root cause of the "toggle does
+  nothing / hides nothing" reports),
   Tray Icon (opt-in: writes/removes the autostart desktop entry and
   spawns/kills `micsource tray`), Virtual Microphone + Play-to-Speakers
   (config `[audio]` section helpers `_cfg_bool`/`_cfg_set_bool`,

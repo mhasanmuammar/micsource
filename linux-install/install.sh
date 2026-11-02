@@ -1555,9 +1555,16 @@ class MicSourceApp(Adw.Application):
         for line in out.splitlines():
             stripped = line.strip()
             if stripped.startswith("State:"):
-                state = stripped.split(":", 1)[1].strip()
-                return state not in ("DISABLED", "UNINSTALLED",
-                                     "INITIALIZED", "OUT OF DATE", "ERROR")
+                state = stripped.split(":", 1)[1].strip().upper()
+                # ACTIVE is the only real "on" (prefix-tolerant: some
+                # shells annotate "ACTIVE (ERROR)"). Everything else —
+                # DISABLED, UNINSTALLED, OUT OF DATE, ERROR, and crucially
+                # INACTIVE, which is what GNOME 45+ prints after a
+                # disable — is off. The old blacklist treated INACTIVE
+                # as on, so the getter reported a *hidden* tile as on
+                # and every verified re-sync snapped the switch back
+                # (root cause of the "toggle does nothing" reports).
+                return state.startswith("ACTIVE")
         return False
 
     def _apply_tile(self, on):
