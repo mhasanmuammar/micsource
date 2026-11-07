@@ -24,12 +24,12 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw' >/dev/null 2>&1; then
     if [[ -t 0 ]]; then
-        exec python3 "${APP_PATH}"   # terminal: full passthrough
+        exec python3 "${APP_PATH}" # terminal: full passthrough
     fi
     # App drawer (no tty): run supervised so a crash can be logged and
     # surfaced as a notification instead of dying silently.
     out="$(python3 "${APP_PATH}" 2>&1)" && exit 0
-    printf '%s\n' "${out}" >> "${DATA_DIR}/gui.log"
+    printf '%s\n' "${out}" >>"${DATA_DIR}/gui.log"
     if command -v notify-send >/dev/null 2>&1; then
         notify-send -i dialog-error "MicSource" \
             "Control window failed to start. Details in ~/.local/share/micsource/gui.log" \

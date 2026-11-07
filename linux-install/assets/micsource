@@ -26,12 +26,27 @@ GUI_PATH="${DATA_DIR}/micsource-gui"
 BUILD_PATH="${DATA_DIR}/micsource-build"
 CTL_SOCK="${DATA_DIR}/micsource.sock"
 SYSTEMD_UNIT="${HOME}/.config/systemd/user/micsource.service"
-ANDROID_PKG="fr.dzx.audiosource"   # Android package (baked into the APK)
-DEVICE_SOCKET="audiosource"        # device-side socket (RecordThread)
-HOST_SOCKET="micsource"            # host side of the adb forward
+ANDROID_PKG="fr.dzx.audiosource" # Android package (baked into the APK)
+DEVICE_SOCKET="audiosource"      # device-side socket (RecordThread)
+HOST_SOCKET="micsource"          # host side of the adb forward
 
 info() { printf '[INFO] %s\n' "$*"; }
-err()  { printf '[ERR]  %s\n' "$*" >&2; }
+ok() { printf '[OK]   %s\n' "$*"; }
+warn() { printf '[WARN] %s\n' "$*"; }
+err() { printf '[ERR]  %s\n' "$*" >&2; }
+
+ask() { printf '[?]  %s ' "$*"; }
+
+confirm() {
+    local prompt="${1:-Proceed?}"
+    local ans
+    ask "${prompt} [y/N] "
+    read -r ans || true
+    case "$ans" in
+    y | Y | yes | Yes | YES) return 0 ;;
+    *) return 1 ;;
+    esac
+}
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -60,7 +75,7 @@ resolve_adb() {
             "${CONFIG_DIR}/config.ini" | head -n 1)"
     fi
     if [[ -z "$candidate" && -f "${DATA_DIR}/adb.path" ]]; then
-        candidate="$(tr -d '\n' < "${DATA_DIR}/adb.path")"
+        candidate="$(tr -d '\n' <"${DATA_DIR}/adb.path")"
     fi
     if [[ -n "$candidate" && -x "$candidate" ]]; then
         echo "$candidate"
@@ -79,8 +94,8 @@ service_start() {
             err "Service not installed; run install.sh first."
             exit 1
         fi
-        systemctl --user enable --now --quiet "${APP_NAME}.service" 2>/dev/null \
-            || systemctl --user start "${APP_NAME}.service"
+        systemctl --user enable --now --quiet "${APP_NAME}.service" 2>/dev/null ||
+            systemctl --user start "${APP_NAME}.service"
         info "Monitor service started."
     else
         if [[ ! -f "${MONITOR_PATH}" ]]; then
@@ -100,8 +115,7 @@ service_stop() {
         pkill -f -- "${MONITOR_PATH}" 2>/dev/null || true
         # Let the monitor exit gracefully first: on SIGTERM it unloads the
         # virtual mic sources and player processes before dying.
-        local i
-        for i in 1 2 3 4 5 6 7 8 9 10; do
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
             pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null || break
             sleep 1
         done
@@ -217,21 +231,21 @@ device_install() {
             ask "Uninstall the existing app and install ours? [y/N] "
             read -r ans || true
             case "$ans" in
-                y|Y|yes)
-                    if ! "$adb_bin" uninstall "${ANDROID_PKG}"; then
-                        err "Could not uninstall the existing app."
-                        exit 1
-                    fi
-                    if ! "$adb_bin" install -r -t "${APK_STAGED}"; then
-                        err "adb install failed even after uninstall."
-                        exit 1
-                    fi
-                    ;;
-                *)
-                    info "Device install skipped. The existing (differently-signed)"
-                    info "app on the device keeps working normally."
+            y | Y | yes)
+                if ! "$adb_bin" uninstall "${ANDROID_PKG}"; then
+                    err "Could not uninstall the existing app."
                     exit 1
-                    ;;
+                fi
+                if ! "$adb_bin" install -r -t "${APK_STAGED}"; then
+                    err "adb install failed even after uninstall."
+                    exit 1
+                fi
+                ;;
+            *)
+                info "Device install skipped. The existing (differently-signed)"
+                info "app on the device keeps working normally."
+                exit 1
+                ;;
             esac
         else
             err "adb install failed: ${install_out}"
@@ -261,15 +275,19 @@ open_config() {
 
 command="${1:-help}"
 case "$command" in
-    start)         service_start ;;
-    stop)          service_stop ;;
-    status)        query_status ;;
-    run)           one_shot_run ;;
-    tray)          launch_tray ;;
-    window)        launch_window ;;
-    build-apk)     build_apk ;;
-    install-apk)   device_install ;;
-    config)        open_config ;;
-    help|--help|-h) usage ;;
-    *) err "Unknown command: ${command}"; usage >&2; exit 2 ;;
+start) service_start ;;
+stop) service_stop ;;
+status) query_status ;;
+run) one_shot_run ;;
+tray) launch_tray ;;
+window) launch_window ;;
+build-apk) build_apk ;;
+install-apk) device_install ;;
+config) open_config ;;
+help | --help | -h) usage ;;
+*)
+    err "Unknown command: ${command}"
+    usage >&2
+    exit 2
+    ;;
 esac
