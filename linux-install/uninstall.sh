@@ -19,52 +19,61 @@
 #   * Idempotent — safe to run multiple times.
 set -euo pipefail
 
+# Shared helpers, colors, and install paths live in common.sh.
+# (Sourcing a relative library file; shellcheck does not follow it → /dev/null.)
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "${SRC_DIR}/common.sh"
+
 ##############################################################################
-# Configuration
+# Script-specific paths (AUTOSTART_FILE, ADB_LINK, BIN_LINK and the rest of
+# the shared layout come from common.sh)
 ##############################################################################
-APP_NAME="micsource"
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTALL_DIR="${PROJECT_ROOT}/linux-install"
-CONFIG_DIR="${HOME}/.config/${APP_NAME}"
-DATA_DIR="${HOME}/.local/share/${APP_NAME}"
-APPS_DIR="${HOME}/.local/share/applications"
-SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
-ICON_THEME_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
-BIN_LINK="${HOME}/.local/bin/${APP_NAME}"
-GNOME_EXT_UUID="micsource-tile@micsource.local"
-XDG_AUTOSTART="${HOME}/.config/autostart/micsource-tray.desktop"
-PULSE_LOCK_CONF="${HOME}/.config/pipewire/pipewire-pulse.conf.d/10-micsource-stream-lock.conf"
-GNOME_EXT_DIR="${HOME}/.local/share/gnome-shell/extensions/${GNOME_EXT_UUID}"
+MONITOR_PATH="${DATA_DIR}/micsource-monitor.py"
+UNIT_FILE="${SYSTEMD_USER_DIR}/${APP_NAME}.service"
+DESKTOP_FILE="${APPS_DIR}/${APP_NAME}.desktop"
+ICON_FILE="${ICON_THEME_DIR}/${APP_NAME}.svg"
+SOCK="${DATA_DIR}/micsource.sock"
+CLI_TARGET="${DATA_DIR}/${APP_NAME}"
+ADB_BUNDLE_ADB="${DATA_DIR}/adb-bundle/platform-tools/adb"
+ADB_BUNDLE_DIR="${DATA_DIR}/adb-bundle"
 
-RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; BLD=$'\e[1m'; RST=$'\e[0m'
+##############################################################################
+# Arguments
+##############################################################################
+for arg in "$@"; do
+    case "${arg}" in
+    -h | --help)
+        cat <<USAGE
+Usage: uninstall.sh [--help]
 
-info()  { printf '%s[INFO]%s  %s\n' "$BLU" "$RST" "$*"; }
-ok()    { printf '%s[OK]%s   %s\n' "$GRN" "$RST" "$*"; }
-warn()  { printf '%s[WARN]%s %s\n' "$YLW" "$RST" "$*"; }
-err()   { printf '%s[ERR]%s  %s\n' "$RED" "$RST" "$*" >&2; }
-ask()   { printf '%s[?]%s  %s ' "$YLW" "$RST" "$*"; }
+Removes the MicSource host-side components from the current user account:
+systemd user service, app drawer launcher + icon, CLI, GNOME extension,
+config and data directories, and the pipewire stream-routing lock.
+Asks before removing the bundled adb toolchain (it may be useful elsewhere);
+the only other prompt is the uninstall confirmation.
 
-confirm() {
-    local prompt="${1:-Proceed?}"
-    local ans
-    ask "${prompt} [y/N] "
-    read -r ans || true
-    case "$ans" in
-        y|Y|yes|Yes|YES) return 0 ;;
-        *) return 1 ;;
+  --help  show this help and exit.
+USAGE
+        exit 0
+        ;;
+    *)
+        err "Unknown option: ${arg}"
+        printf 'Usage: uninstall.sh [--help]\n' >&2
+        exit 2
+        ;;
     esac
-}
-
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
+done
 
 # True if the directory contains files created by install.sh (ownership guard)
 data_dir_is_ours() {
     local marker
     for marker in adb.path apk.path micsource.sock micsource \
-                  micsource-tray.py micsource-monitor.py \
-                  micsource-app.py micsource-gui micsource-build \
-                  build-env.path micsource-icon.svg micsource-release.apk \
-                  adb-bundle; do
+        micsource-tray.py micsource-monitor.py \
+        micsource-app.py micsource-gui micsource-build \
+        build-env.path micsource-icon.svg micsource-release.apk \
+        project.path \
+        adb-bundle; do
         if [[ -e "${DATA_DIR}/${marker}" ]]; then
             return 0
         fi
@@ -105,7 +114,6 @@ fi
 ##############################################################################
 # 2. Best-effort kill of a manually launched monitor (per systemd absence)
 ##############################################################################
-MONITOR_PATH="${DATA_DIR}/micsource-monitor.py"
 if ! have_cmd systemctl && have_cmd pkill && [[ -f "${MONITOR_PATH}" ]]; then
     # Pattern matches the exact script path only; never kills by generic name.
     pkill -f -- "${MONITOR_PATH}" 2>/dev/null || true
@@ -115,8 +123,7 @@ fi
 ##############################################################################
 # 3. Remove systemd unit file
 ##############################################################################
-UNIT_FILE="${SYSTEMD_USER_DIR}/${APP_NAME}.service"
-if [[ -f "$UNIT_FILE" ]]; then
+if [[ -f "${UNIT_FILE}" ]]; then
     rm -f -- "$UNIT_FILE"
     ok "Removed systemd unit: ${UNIT_FILE}"
     if have_cmd systemctl; then
@@ -127,8 +134,7 @@ fi
 ##############################################################################
 # 4. Remove app drawer launcher
 ##############################################################################
-DESKTOP_FILE="${APPS_DIR}/${APP_NAME}.desktop"
-if [[ -f "$DESKTOP_FILE" ]]; then
+if [[ -f "${DESKTOP_FILE}" ]]; then
     rm -f -- "$DESKTOP_FILE"
     ok "Removed launcher: ${DESKTOP_FILE}"
 fi
@@ -139,8 +145,7 @@ fi
 ##############################################################################
 # 5. Remove hicolor app icon
 ##############################################################################
-ICON_FILE="${ICON_THEME_DIR}/${APP_NAME}.svg"
-if [[ -f "$ICON_FILE" ]]; then
+if [[ -f "${ICON_FILE}" ]]; then
     rm -f -- "$ICON_FILE"
     ok "Removed icon: ${ICON_FILE}"
 fi
@@ -148,8 +153,7 @@ fi
 ##############################################################################
 # 5b. Remove the micsource CLI symlink (only if it points to our script)
 ##############################################################################
-CLI_TARGET="${DATA_DIR}/micsource"
-if [[ -L "$BIN_LINK" ]]; then
+if [[ -L "${BIN_LINK}" ]]; then
     if [[ "$(readlink -f "$BIN_LINK")" == "$CLI_TARGET" ]]; then
         rm -f -- "$BIN_LINK"
         ok "Removed CLI symlink: ${BIN_LINK}"
@@ -163,9 +167,7 @@ fi
 ##############################################################################
 # 5c. Remove the adb PATH symlink (only if it points into our adb bundle)
 ##############################################################################
-ADB_LINK="${HOME}/.local/bin/adb"
-ADB_BUNDLE_ADB="${DATA_DIR}/adb-bundle/platform-tools/adb"
-if [[ -L "$ADB_LINK" ]]; then
+if [[ -L "${ADB_LINK}" ]]; then
     if [[ "$(readlink -f "$ADB_LINK")" == "$ADB_BUNDLE_ADB" ]]; then
         rm -f -- "$ADB_LINK"
         ok "Removed adb PATH symlink: ${ADB_LINK}"
@@ -175,16 +177,16 @@ if [[ -L "$ADB_LINK" ]]; then
 fi
 
 ##############################################################################
-# 6. Remove GNOME extension (only if it is ours)
+# 6. Remove stream routing lock, autostart entry, and GNOME extension
 ##############################################################################
 if [[ -f "$PULSE_LOCK_CONF" ]] && grep -qi "micsource" "$PULSE_LOCK_CONF"; then
     rm -f -- "$PULSE_LOCK_CONF"
     ok "Removed stream routing lock: $PULSE_LOCK_CONF"
 fi
 
-if [[ -f "$XDG_AUTOSTART" ]] && grep -qi "micsource" "$XDG_AUTOSTART"; then
-    rm -f -- "$XDG_AUTOSTART"
-    ok "Removed autostart entry: $XDG_AUTOSTART"
+if [[ -f "${AUTOSTART_FILE}" ]] && grep -qi "micsource" "${AUTOSTART_FILE}"; then
+    rm -f -- "${AUTOSTART_FILE}"
+    ok "Removed autostart entry: ${AUTOSTART_FILE}"
 fi
 
 if [[ -d "$GNOME_EXT_DIR" ]]; then
@@ -204,9 +206,8 @@ fi
 ##############################################################################
 # 7. Remove control socket left behind by the monitor
 ##############################################################################
-SOCK="${DATA_DIR}/micsource.sock"
-if [[ -e "$SOCK" ]]; then
-    rm -f -- "$SOCK"
+if [[ -e "${SOCK}" ]]; then
+    rm -f -- "${SOCK}"
     ok "Removed control socket: ${SOCK}"
 fi
 
@@ -226,8 +227,7 @@ if [[ -d "$DATA_DIR" ]]; then
     if ! data_dir_is_ours; then
         warn "Data dir exists but contains no MicSource files; leaving it untouched."
     else
-        ADB_BUNDLE_DIR="${DATA_DIR}/adb-bundle"
-        if [[ -d "$ADB_BUNDLE_DIR" ]]; then
+        if [[ -d "${ADB_BUNDLE_DIR}" ]]; then
             echo
             warn "The adb bundle was installed at: ${ADB_BUNDLE_DIR}"
             info "You may want to keep it if you use adb for other purposes."
