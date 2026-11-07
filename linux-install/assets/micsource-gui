@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# micsource-gui - launch the MicSource control window.
+#
+# Exec target of the app-drawer launcher. If PyGObject (python3-gi) is not
+# installed, shows a desktop notification instead of dying silently.
+set -euo pipefail
+
+DATA_DIR="${HOME}/.local/share/micsource"
+APP_PATH="${DATA_DIR}/micsource-app.py"
+
+if [[ ! -f "${APP_PATH}" ]]; then
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -i dialog-error "MicSource" \
+            "Control window not installed. Run linux-install/install.sh first." \
+            >/dev/null 2>&1 || true
+    fi
+    echo "micsource-gui: ${APP_PATH} not found; run install.sh first." >&2
+    exit 1
+fi
+
+if python3 -c 'import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Adw' >/dev/null 2>&1; then
+    if [[ -t 0 ]]; then
+        exec python3 "${APP_PATH}"   # terminal: full passthrough
+    fi
+    # App drawer (no tty): run supervised so a crash can be logged and
+    # surfaced as a notification instead of dying silently.
+    out="$(python3 "${APP_PATH}" 2>&1)" && exit 0
+    printf '%s\n' "${out}" >> "${DATA_DIR}/gui.log"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -i dialog-error "MicSource" \
+            "Control window failed to start. Details in ~/.local/share/micsource/gui.log" \
+            >/dev/null 2>&1 || true
+    fi
+    echo "micsource-gui: window failed to start (logged to ${DATA_DIR}/gui.log):" >&2
+    printf '%s\n' "${out}" >&2
+    exit 1
+fi
+
+msg="PyGObject / GTK 4 / libadwaita is required for the MicSource window. Install it (e.g. 'sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1') and relaunch MicSource."
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -i dialog-error "MicSource" "${msg}" >/dev/null 2>&1 || true
+fi
+echo "micsource-gui: ${msg}" >&2
+exit 1

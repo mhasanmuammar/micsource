@@ -7,7 +7,8 @@ import sys
 import types
 import unittest
 
-TRAY = os.path.expanduser("~/.local/share/micsource/micsource-tray.py")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+TRAY = os.path.join(REPO, "linux-install", "assets", "micsource-tray.py")
 
 
 def _load():
