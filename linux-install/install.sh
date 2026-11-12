@@ -48,6 +48,101 @@ ANDROID_PKG="fr.dzx.audiosource" # Android package (baked into the APK)
 DEVICE_SOCKET="audiosource"      # device-side socket (RecordThread)
 HOST_SOCKET="${APP_NAME}"        # host side of the adb forward
 
+##############################################################################
+# Download + summary plumbing
+##############################################################################
+
+# fetch <url> <dest>: download with curl (preferred) or wget; non-zero on
+# failure. Every download in this script goes through here.
+fetch() {
+    local url="$1" dest="$2"
+    if have_cmd curl; then
+        curl -fL --retry 2 --connect-timeout 15 -o "${dest}" "${url}"
+    elif have_cmd wget; then
+        wget -q --tries=2 -O "${dest}" "${url}"
+    else
+        err "Need curl or wget to download: ${url}"
+        return 1
+    fi
+}
+
+# Download scratch dirs under DATA_DIR, removed by the EXIT trap below (and
+# safe to re-remove after a step cleaned its own dir explicitly).
+TMP_DIRS=()
+
+# (Registered via trap EXIT below; shellcheck cannot see that call → false
+# positive SC2317.)
+# shellcheck disable=SC2317
+cleanup_tmp() {
+    local d
+    for d in ${TMP_DIRS[@]+"${TMP_DIRS[@]}"}; do
+        rm -rf -- "${d}"
+    done
+}
+trap cleanup_tmp EXIT
+
+# Step results: every step records ok | skipped | failed; the summary prints
+# one line per step and the installer exits 1 iff a REQUIRED step failed.
+STEP_RESULTS=()
+REQUIRED_STEPS=(assets config desktop cli systemd)
+
+record_step() { # record_step <name> <ok|skipped|failed>
+    STEP_RESULTS+=("${1}:${2}")
+}
+
+# run_step <name> <step-fn...>: run one install step and record its result.
+# Step convention: 0 = ok, 2 = skipped (not applicable, or declined by the
+# user), any other status = failed.
+run_step() {
+    local name="$1" rc=0
+    shift
+    "$@" || rc=$?
+    case "${rc}" in
+    0) record_step "${name}" ok ;;
+    2) record_step "${name}" skipped ;;
+    *) record_step "${name}" failed ;;
+    esac
+    return 0
+}
+
+print_summary() {
+    local entry name status
+    echo
+    echo "== Summary =="
+    for entry in ${STEP_RESULTS[@]+"${STEP_RESULTS[@]}"}; do
+        name="${entry%%:*}"
+        status="${entry##*:}"
+        case "${status}" in
+        ok) ok "${name}" ;;
+        skipped) warn "${name} (skipped)" ;;
+        *) err "${name} (FAILED)" ;;
+        esac
+    done
+    echo
+}
+
+required_failed() { # true iff any required step recorded failed
+    local entry name status
+    for entry in ${STEP_RESULTS[@]+"${STEP_RESULTS[@]}"}; do
+        name="${entry%%:*}"
+        status="${entry##*:}"
+        [[ "${status}" == "failed" ]] || continue
+        case " ${REQUIRED_STEPS[*]} " in
+        *" ${name} "*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# gnome_desktop: true iff the session looks like GNOME (XDG_CURRENT_DESKTOP
+# is colon-separated and can hold e.g. "ubuntu:GNOME").
+gnome_desktop() {
+    case "${XDG_CURRENT_DESKTOP:-}:${GNOME_DESKTOP_SESSION_ID:-}" in
+    *[Gg][Nn][Oo][Mm][Ee]*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
 WITH_TRAY=0
 for arg in "$@"; do
     case "${arg}" in
@@ -130,51 +225,33 @@ step_adb() {
         warn "adb not found (needed to talk to the phone)."
         if ! confirm "Install the official Google platform-tools bundle?"; then
             info "Skipping adb bundle install; install adb yourself and re-run."
-            return 1
+            return 2
         fi
         if ! have_cmd unzip; then
             err "'unzip' is required to unpack the bundle; install it and re-run."
             return 1
         fi
-        have_cmd curl || have_cmd wget || {
-            err "Need curl or wget."
-            return 1
-        }
-        local url zip tmp
+        local url scratch zip
         url="https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
-        zip="${DATA_DIR}/.platform-tools.zip"
-        tmp="${DATA_DIR}/.platform-tools.$$"
-        mkdir -p "${tmp}"
+        scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")"
+        TMP_DIRS+=("${scratch}")
+        zip="${scratch}/platform-tools.zip"
         info "Downloading platform-tools..."
-        if have_cmd curl; then
-            curl -fL --retry 2 -o "${zip}" "${url}" || {
-                rm -rf "${tmp}"
-                rm -f -- "${zip}"
-                err "Download failed."
-                return 1
-            }
-        else
-            wget -q -O "${zip}" "${url}" || {
-                rm -rf "${tmp}"
-                rm -f -- "${zip}"
-                err "Download failed."
-                return 1
-            }
+        if ! fetch "${url}" "${zip}"; then
+            err "Download failed."
+            return 1
         fi
-        unzip -q "${zip}" -d "${tmp}" || {
-            rm -rf "${tmp}"
-            rm -f -- "${zip}"
+        unzip -q "${zip}" -d "${scratch}" || {
             err "Unpack failed."
             return 1
         }
-        rm -f -- "${zip}"
         mkdir -p "${ADB_BUNDLE_DIR}"
         if [[ -d "${ADB_BUNDLE_DIR}/platform-tools" ]]; then
             warn "Existing platform-tools found; replacing."
             rm -rf "${ADB_BUNDLE_DIR}/platform-tools"
         fi
-        mv -T "${tmp}/platform-tools" "${ADB_BUNDLE_DIR}/platform-tools"
-        rm -rf "${tmp}"
+        mv -T "${scratch}/platform-tools" "${ADB_BUNDLE_DIR}/platform-tools"
+        rm -rf "${scratch}" # success: drop the scratch now (the trap is the backstop)
         adb_bin="${ADB_BUNDLE_DIR}/platform-tools/adb"
         ok "adb bundle installed: ${adb_bin}"
         if [[ -L "${ADB_LINK}" ]]; then
@@ -240,13 +317,9 @@ step_build_env() {
     warn "(Only needed to BUILD the APK from source; a prebuilt APK can be staged instead.)"
     if ! confirm "Download and install a portable Temurin JDK 17 + Android cmdline-tools?"; then
         info "Skipping build environment; re-run install.sh later to build from source."
-        return 1
+        return 2
     fi
-    have_cmd curl || have_cmd wget || {
-        err "Need curl or wget."
-        return 1
-    }
-    local arch out_file
+    local arch
     case "$(uname -m)" in
     x86_64) arch="x64" ;;
     aarch64 | arm64) arch="aarch64" ;;
@@ -257,59 +330,41 @@ step_build_env() {
     esac
     local jdk_url="https://api.adoptium.net/v3/binary/latest/17/ga/linux/${arch}/jdk/hotspot/normal/eclipse"
     local tools_url="https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
+    local scratch jdk_file tools_file tools_tmp
+    scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")"
+    TMP_DIRS+=("${scratch}")
+    jdk_file="${scratch}/jdk.tar.gz"
+    tools_file="${scratch}/cmdline-tools.zip"
+    tools_tmp="${scratch}/tools"
     mkdir -p "${BUILD_ENV_DIR}/jdk" "${BUILD_ENV_DIR}/android-sdk"
 
     info "Downloading JDK 17 (${arch})..."
-    out_file="${DATA_DIR}/.jdk.tar.gz"
-    if have_cmd curl; then
-        curl -fL --retry 2 -o "${out_file}" "${jdk_url}" || {
-            rm -f -- "${out_file}"
-            err "JDK download failed."
-            return 1
-        }
-    else
-        wget -q -O "${out_file}" "${jdk_url}" || {
-            rm -f -- "${out_file}"
-            err "JDK download failed."
-            return 1
-        }
+    if ! fetch "${jdk_url}" "${jdk_file}"; then
+        err "JDK download failed."
+        return 1
     fi
-    tar -xzf "${out_file}" -C "${BUILD_ENV_DIR}/jdk" --strip-components 1 || {
-        rm -f -- "${out_file}"
+    tar -xzf "${jdk_file}" -C "${BUILD_ENV_DIR}/jdk" --strip-components 1 || {
         err "JDK unpack failed."
         return 1
     }
-    rm -f -- "${out_file}"
+    rm -f -- "${jdk_file}"
 
     info "Downloading Android cmdline-tools..."
-    out_file="${DATA_DIR}/.cmdline-tools.zip"
-    if have_cmd curl; then
-        curl -fL --retry 2 -o "${out_file}" "${tools_url}" || {
-            rm -f -- "${out_file}"
-            err "cmdline-tools download failed."
-            return 1
-        }
-    else
-        wget -q -O "${out_file}" "${tools_url}" || {
-            rm -f -- "${out_file}"
-            err "cmdline-tools download failed."
-            return 1
-        }
+    if ! fetch "${tools_url}" "${tools_file}"; then
+        err "cmdline-tools download failed."
+        return 1
     fi
-    local tools_tmp="${DATA_DIR}/.tools-tmp.$$"
     mkdir -p "${tools_tmp}"
-    unzip -q "${out_file}" -d "${tools_tmp}" || {
-        rm -rf "${tools_tmp}"
-        rm -f -- "${out_file}"
+    unzip -q "${tools_file}" -d "${tools_tmp}" || {
         err "cmdline-tools unpack failed."
         return 1
     }
-    rm -f -- "${out_file}"
+    rm -f -- "${tools_file}"
     mkdir -p "${BUILD_ENV_DIR}/android-sdk/cmdline-tools"
     rm -rf "${BUILD_ENV_DIR}/android-sdk/cmdline-tools/latest"
     mv -T "${tools_tmp}/cmdline-tools" \
         "${BUILD_ENV_DIR}/android-sdk/cmdline-tools/latest"
-    rm -rf "${tools_tmp}"
+    rm -rf "${scratch}" # success: drop the scratch now (the trap is the backstop)
 
     info "Installing SDK packages (licenses auto-accepted)..."
     yes | "${BUILD_ENV_DIR}/android-sdk/cmdline-tools/latest/bin/sdkmanager" \
@@ -348,7 +403,7 @@ step_apk() {
         warn "No MicSource APK found (prebuilt or previous build output)."
         if ! confirm "Build it now from source with Gradle?"; then
             info "Skipping APK staging; place a prebuilt APK and re-run install.sh."
-            return 1
+            return 2
         fi
         env_set_if_portable
         if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
@@ -380,7 +435,10 @@ step_apk() {
         fi
     fi
 
-    cp -f "${apk}" "${STAGED_APK}"
+    # Avoid "cp: same file" noise when the staged APK is the only candidate.
+    if [[ "$(readlink -f "${apk}")" != "$(readlink -f "${STAGED_APK}")" ]]; then
+        cp -f "${apk}" "${STAGED_APK}"
+    fi
     printf '%s\n' "${apk}" >"${APK_PATH_FILE}"
     ok "APK staged: ${STAGED_APK} (from ${apk})"
 }
@@ -390,7 +448,7 @@ step_device() {
     adb_bin="$(cat "${ADB_PATH_FILE}" 2>/dev/null || echo "")"
     if [[ -z "${adb_bin}" || ! -x "${adb_bin}" ]]; then
         warn "adb unavailable; skipping device setup."
-        return 1
+        return 2
     fi
 
     local state
@@ -399,7 +457,7 @@ step_device() {
         warn "No Android device online (state: ${state:-none})."
         info "Connect the phone, enable USB debugging, authorize the host, then run:"
         info "  micsource install-apk   # install + forward"
-        return 1
+        return 2
     fi
     info "Installing APK on the device..."
     if "${adb_bin}" install -r -t "${STAGED_APK}"; then
@@ -409,15 +467,24 @@ step_device() {
     fi
     "${adb_bin}" shell am start -n "${ANDROID_PKG}/.MainActivity" \
         >/dev/null 2>&1 || true
-    "${adb_bin}" forward "localabstract:${HOST_SOCKET}" \
-        "localabstract:${DEVICE_SOCKET}" >/dev/null 2>&1 || true
-    ok "adb forward set: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"
+    if "${adb_bin}" forward "localabstract:${HOST_SOCKET}" \
+        "localabstract:${DEVICE_SOCKET}" >/dev/null 2>&1; then
+        ok "adb forward set: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"
+        return 0
+    fi
+    warn "adb forward failed; the host cannot reach the phone mic yet."
+    info "  micsource install-apk   # retry install + forward"
+    return 1
 }
 
 step_config() {
     if [[ -f "${CONFIG_PATH}" ]]; then
         ok "Existing config preserved: ${CONFIG_PATH}"
         return 0
+    fi
+    if [[ -e "${CONFIG_PATH}" ]]; then
+        err "Cannot write config: ${CONFIG_PATH} exists and is not a regular file."
+        return 1
     fi
     cat >"${CONFIG_PATH}" <<'CONF'
 # MicSource host configuration
@@ -523,12 +590,20 @@ AUTOEOF
     else
         info "Tray is opt-in: enable it from the control window's Preferences."
     fi
+    # Probe the same bindings the tray script tries: the classic
+    # AppIndicator3 first, then the maintained ayatana fork (see
+    # micsource-tray.py).
     if ! python3 -c 'import gi
 gi.require_version("Gtk", "3.0")
-gi.require_version("AppIndicator3", "0.1")' >/dev/null 2>&1; then
-        warn "The AppIndicator/Ayatana Python binding is not installed; the tray"
-        info "will fall back to opening the control window. Install it, e.g."
-        info "  sudo apt install gir1.2-appindicator3-0.1"
+try:
+    gi.require_version("AppIndicator3", "0.1")
+    from gi.repository import AppIndicator3  # noqa: F401
+except (ImportError, ValueError):
+    gi.require_version("AyatanaAppIndicator3", "0.1")
+    from gi.repository import AyatanaAppIndicator3  # noqa: F401' >/dev/null 2>&1; then
+        warn "The GTK/AppIndicator Python bindings are not installed; the tray"
+        info "will fall back to opening the control window. Install them, e.g."
+        info "  sudo apt install gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1"
         info "On GNOME (without appindicator), use the quick settings pill instead."
     fi
 }
@@ -563,6 +638,14 @@ UNITEOF
 }
 
 step_gnome_extension() {
+    if ! gnome_desktop; then
+        info "Not a GNOME desktop; skipping the quick settings pill."
+        info "Manual install path: copy the files from"
+        info "  ${INSTALL_DIR}/assets/gnome/  into  ${GNOME_EXT_DIR}"
+        info "then enable ${GNOME_EXT_UUID} (Extensions app, or:"
+        info "  gnome-extensions enable ${GNOME_EXT_UUID})."
+        return 2
+    fi
     mkdir -p "${GNOME_EXT_DIR}"
     cp -f "${INSTALL_DIR}/assets/gnome/extension.js" "${GNOME_EXT_DIR}/extension.js"
     cp -f "${INSTALL_DIR}/assets/gnome/prefs.js" "${GNOME_EXT_DIR}/prefs.js"
@@ -605,19 +688,24 @@ LOCKEOF
 main() {
     echo "${BLD}=== MicSource Linux Host Installer ===${RST}"
     echo
-    step_sanity
-    step_assets || true
-    step_adb || true
-    step_build_env || true
-    step_apk || true
-    step_device || true
-    step_config || true
-    step_desktop || true
-    step_cli || true
-    step_tray || true
-    step_systemd || true
-    step_gnome_extension || true
-    step_pipewire || true
+    step_sanity # bare: a failed sanity check exits immediately (nothing installed yet)
+    run_step assets step_assets
+    run_step adb step_adb
+    run_step build_env step_build_env
+    run_step apk step_apk
+    run_step device step_device
+    run_step config step_config
+    run_step desktop step_desktop
+    run_step cli step_cli
+    run_step tray step_tray
+    run_step systemd step_systemd
+    run_step gnome_ext step_gnome_extension
+    run_step pipewire step_pipewire
+    print_summary
+    if required_failed; then
+        err "Required install steps failed; fix the problems above and re-run."
+        exit 1
+    fi
     echo
     ok "MicSource host-side install complete."
     info "Quick start:"

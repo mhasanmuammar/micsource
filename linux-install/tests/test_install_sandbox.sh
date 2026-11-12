@@ -32,6 +32,8 @@ STUBBIN=""
 STUB_LOG=""
 TEST_STDOUT=""
 TEST_STDERR=""
+COMBINED=""
+TEST_XDG_DESKTOP=""
 RC=0
 
 SAVED_SANDBOX=""
@@ -112,6 +114,8 @@ make_sandbox() {
     STUB_LOG="${SANDBOX}/stub.log"
     TEST_STDOUT="${SANDBOX}/stdout.txt"
     TEST_STDERR="${SANDBOX}/stderr.txt"
+    COMBINED="${SANDBOX}/combined.txt"
+    TEST_XDG_DESKTOP=""
     mkdir -p "${SANDBOX_HOME}" "${STUBBIN}"
     : >"${STUB_LOG}"
 
@@ -172,12 +176,17 @@ run_script() { # run_script <stdin-bytes> <script> [args...]
     printf '%s' "${stdin_data}" |
         env \
             HOME="${SANDBOX_HOME}" \
-            XDG_CURRENT_DESKTOP="GNOME" \
+            XDG_CURRENT_DESKTOP="${TEST_XDG_DESKTOP:-GNOME}" \
+            GNOME_DESKTOP_SESSION_ID="" \
             STUB_LOG="${STUB_LOG}" \
             PATH="${STUBBIN}:/usr/bin:/bin" \
             bash "$@" \
             >"${TEST_STDOUT}" 2>"${TEST_STDERR}" ||
         RC=$?
+}
+
+combine_output() { # combine_output — merge the last run's stdout+stderr
+    cat "${TEST_STDOUT}" "${TEST_STDERR}" >"${COMBINED}"
 }
 
 # Save/restore the current sandbox's globals so a later case can keep using
@@ -419,6 +428,109 @@ case_install_uninstall_roundtrip() {
     end_case
 }
 
+##############################################################################
+# Case 9: install.sh strict args (unknown flag / --help)
+##############################################################################
+case_install_args() {
+    start_case 9 "install --bogus exits 2; --help prints usage and exits 0"
+    make_sandbox
+    run_script "" "${INSTALL}" --bogus
+    assert_exit 2 "${RC}"
+    run_script "" "${INSTALL}" --help
+    assert_exit 0 "${RC}"
+    assert_contains "${TEST_STDOUT}" "Usage:"
+    end_case
+}
+
+##############################################################################
+# Case 10: a failed REQUIRED step makes the installer exit 1
+##############################################################################
+case_install_required_failure() {
+    start_case 10 "config step failing (dir in the way) exits 1 with config (FAILED)"
+    make_sandbox
+    # Occupy the config path with a directory: the config step cannot write
+    # config.ini there and must fail the whole run (required step).
+    mkdir -p "${TEST_CONFIG_DIR}"
+    mkdir "${TEST_CONFIG_DIR}/config.ini"
+    run_script $'n\nn\n' "${INSTALL}"
+    assert_exit 1 "${RC}"
+    combine_output
+    assert_contains "${COMBINED}" "config (FAILED)"
+    end_case
+}
+
+##############################################################################
+# Case 11: a declined OPTIONAL step records skipped and keeps exit 0
+##############################################################################
+case_install_optional_skipped() {
+    start_case 11 "declined build env records build_env (skipped) and exits 0"
+    make_sandbox
+    run_script $'n\nn\n' "${INSTALL}"
+    assert_exit 0 "${RC}"
+    combine_output
+    assert_contains "${COMBINED}" "build_env (skipped)"
+    end_case
+}
+
+##############################################################################
+# Case 12: download failure — honest record, exit 0, no scratch left behind
+##############################################################################
+case_install_download_failure() {
+    start_case 12 "failed bundle download records adb (FAILED), exits 0, cleans scratch"
+    make_sandbox
+    # Download-only stub dir with NO adb on PATH: /usr/bin and /bin hold no
+    # adb on this machine and ~/.local/bin (where the real one lives) is
+    # deliberately absent. curl logs and exits 22; wget logs and exits 1 so
+    # the fallback can never reach the network either.
+    local dlbin="${SANDBOX}/dlstubbin"
+    mkdir -p "${dlbin}"
+    cat >"${dlbin}/curl" <<'STUB'
+#!/bin/sh
+printf 'curl %s\n' "$*" >> "${STUB_LOG}"
+exit 22
+STUB
+    cat >"${dlbin}/wget" <<'STUB'
+#!/bin/sh
+printf 'wget %s\n' "$*" >> "${STUB_LOG}"
+exit 1
+STUB
+    chmod +x "${dlbin}/curl" "${dlbin}/wget"
+    RC=0
+    printf 'y\nn\n' |
+        env \
+            HOME="${SANDBOX_HOME}" \
+            XDG_CURRENT_DESKTOP="GNOME" \
+            GNOME_DESKTOP_SESSION_ID="" \
+            STUB_LOG="${STUB_LOG}" \
+            PATH="${dlbin}:/usr/bin:/bin" \
+            bash "${INSTALL}" \
+            >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 0 "${RC}"
+    combine_output
+    assert_contains "${COMBINED}" "adb (FAILED)"
+    local leftovers
+    leftovers="$(find "${TEST_DATA_DIR}" -maxdepth 1 \( -name '.dl.*' -o -name '.platform-tools*' \) || true)"
+    if [[ -n "${leftovers}" ]]; then
+        fail_case "download scratch left behind: ${leftovers}"
+    fi
+    end_case
+}
+
+##############################################################################
+# Case 13: non-GNOME desktop skips the extension and keeps exit 0
+##############################################################################
+case_install_non_gnome() {
+    start_case 13 "XDG_CURRENT_DESKTOP=KDE skips gnome_ext and exits 0"
+    make_sandbox
+    TEST_XDG_DESKTOP="KDE"
+    run_script $'n\nn\n' "${INSTALL}"
+    assert_exit 0 "${RC}"
+    assert_gone "${TEST_EXT_DIR}"
+    combine_output
+    assert_contains "${COMBINED}" "gnome_ext (skipped)"
+    end_case
+}
+
 # Invoked via `trap cleanup EXIT`; shellcheck cannot see that call → false
 # positive SC2317.
 # shellcheck disable=SC2317
@@ -440,6 +552,11 @@ main() {
     case_install_happy_path
     case_install_python3_preflight
     case_install_uninstall_roundtrip
+    case_install_args
+    case_install_required_failure
+    case_install_optional_skipped
+    case_install_download_failure
+    case_install_non_gnome
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1
