@@ -481,7 +481,9 @@ case_install_download_failure() {
     # Download-only stub dir with NO adb on PATH: /usr/bin and /bin hold no
     # adb on this machine and ~/.local/bin (where the real one lives) is
     # deliberately absent. curl logs and exits 22; wget logs and exits 1 so
-    # the fallback can never reach the network either.
+    # the fallback can never reach the network either. The systemd/gnome
+    # stubs mirror the stubbin ones so the later required steps stay
+    # side-effect-free on the live session.
     local dlbin="${SANDBOX}/dlstubbin"
     mkdir -p "${dlbin}"
     cat >"${dlbin}/curl" <<'STUB'
@@ -494,7 +496,17 @@ STUB
 printf 'wget %s\n' "$*" >> "${STUB_LOG}"
 exit 1
 STUB
-    chmod +x "${dlbin}/curl" "${dlbin}/wget"
+    cat >"${dlbin}/systemctl" <<'STUB'
+#!/bin/sh
+printf 'systemctl %s\n' "$*" >> "${STUB_LOG}"
+exit 0
+STUB
+    cat >"${dlbin}/gnome-extensions" <<'STUB'
+#!/bin/sh
+printf 'gnome-extensions %s\n' "$*" >> "${STUB_LOG}"
+exit 0
+STUB
+    chmod +x "${dlbin}/curl" "${dlbin}/wget" "${dlbin}/systemctl" "${dlbin}/gnome-extensions"
     RC=0
     printf 'y\nn\n' |
         env \
