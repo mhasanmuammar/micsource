@@ -721,7 +721,7 @@ replacement leaves the previous recording pipeline wedged).
 - `fetch()` + `mktemp` scratch dirs + `EXIT` trap replaced three copy-pasted
   curl/wget blocks and fixed-name temp files; strict argument parsing rejects
   unknown flags (exit 2) in both scripts; `uninstall.sh` gained `--help`.
-- `linux-install/tests/test_install_sandbox.sh` (13 cases) drives install and
+- `linux-install/tests/test_install_sandbox.sh` (16 cases) drives install and
   uninstall in a fake `$HOME` with stub `adb`/`systemctl`/`gnome-extensions`
   ahead of PATH; it covers strict args, the python3 preflight, the required-
   vs-optional exit-code rule, download-failure cleanup, non-GNOME skip, the
@@ -824,7 +824,7 @@ The following defects were present in the previous version and are fixed:
 - [x] Honest exit codes: every step records ok/skipped/failed, the summary
   lists them, and the installer exits 1 iff a required step failed (it used to
   print "install complete" and exit 0 unconditionally).
-- [x] Sandbox-verified: `linux-install/tests/test_install_sandbox.sh` (13
+- [x] Sandbox-verified: `linux-install/tests/test_install_sandbox.sh` (16
   cases) runs install + uninstall against a fake `$HOME` with stubbed
   `adb`/`systemctl`/`gnome-extensions` first on `PATH`.
 - [x] No-device-traffic guarantees: the sandbox stubs `adb` (offline for
