@@ -59,8 +59,9 @@ app can use, and — if you opt in — can also play it through the speakers.
 - A legacy tray icon exists for other desktops and is **opt-in**: enable it
   in the app (**Preferences → Startup & Panel → Tray Icon**) or start it
   once with `micsource tray`. It offers Start / Stop Service, Open Control
-  Window and Open Config Folder; if the tray API is unavailable, it opens
-  the control window instead.
+  Window and Open Config Folder; if the tray API is unavailable, it writes
+  the reason to `~/.local/share/micsource/tray.log` and exits instead of
+  opening a second window — use the control window or the GNOME tile there.
 - By default the phone audio is **not** played through your speakers — it
   silently appears as the "phone-mic" input device. Turn on `play_to_speakers`
   in the config if you also want to hear it.

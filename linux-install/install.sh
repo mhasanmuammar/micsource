@@ -649,14 +649,15 @@ except (ImportError, ValueError):
     gi.require_version("AyatanaAppIndicator3", "0.1")
     from gi.repository import AyatanaAppIndicator3  # noqa: F401' >/dev/null 2>&1; then
         warn "The GTK/AppIndicator Python bindings are not installed; the tray"
-        info "will fall back to opening the control window. Install them, e.g."
+        info "will log the reason to ${DATA_DIR}/tray.log and exit instead of"
+        info "starting. Install them, e.g."
         info "  sudo apt install gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1"
         info "On GNOME (without appindicator), use the quick settings pill instead."
     fi
 }
 
 step_systemd() {
-    cat >"${UNIT_FILE}" <<UNITEOF
+    write_or_fail "${UNIT_FILE}" <<UNITEOF || return 1
 [Unit]
 Description=MicSource host monitor (adb socket forward + audio playback)
 After=graphical-session.target

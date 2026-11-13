@@ -170,11 +170,12 @@ download. Scratch dirs are `mktemp -d` under the data dir, tracked in
    the generic `audio-input-microphone` themed icon when no SVG exists (a PNG
    is never copied under an `.svg` name); refreshes the desktop database if
    `update-desktop-database` exists.
-8. `step_cli` — installs the `micsource` bash dispatcher and symlinks it to
-   `~/.local/bin/micsource` (guarded: an existing non-MicSource file/symlink
-   at that path is never replaced). Warns when `~/.local/bin` is missing from
-   PATH. The CLI defines its own `info`/`warn`/`err`/`ask`/`confirm` helpers
-   (the asset ships them; see the fixed bugs below). CLI commands: `start`
+8. `step_cli` — symlinks the already-installed `micsource` bash dispatcher
+   (the asset copy happens in `step_assets`) to `~/.local/bin/micsource`
+   (guarded: an existing non-MicSource file/symlink at that path is never
+   replaced). Warns when `~/.local/bin` is missing from PATH. The CLI defines
+   its own `info`/`warn`/`err`/`ask`/`confirm` helpers (the asset ships them;
+   see the fixed bugs below). CLI commands: `start`
    (enable+start the systemd unit, or background-launch the monitor without
    systemd), `stop` (systemd stop + best-effort `pkill -f` on the exact
    monitor path), `status` (queries the control socket `micsource.sock` →
@@ -659,7 +660,9 @@ replacement leaves the previous recording pipeline wedged).
 - Without systemd, best-effort `pkill -f` on the exact monitor script path
   (never a generic name).
 - Removes: systemd unit, desktop file, hicolor icon, control socket, GNOME
-  extension dir, adb bundle (after confirmation), config dir, data dir.
+  extension dir, config dir, data dir. The adb bundle living inside the data
+  dir is removed only when the user confirms; declining moves the bundle (and
+  only it) aside to a temporary dir, removes the data dir, then restores it.
 - **Ownership guards:** `rm -rf` targets are only deleted when they contain
   MicSource's own marker files (`config.ini` for the config dir;
   `adb.path` / `apk.path` / `project.path` / `micsource.sock` / the
