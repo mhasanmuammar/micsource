@@ -105,6 +105,19 @@ run_step() {
     return 0
 }
 
+# write_or_fail <path>: copy stdin into <path>, failing the calling step when
+# the write fails. Required-step writes need this explicit check: run_step
+# runs a step as `"$@" || rc=$?`, and inside that `||` context `set -e` is
+# suspended, so an unchecked failed write (read-only dir, ENOSPC) would fall
+# through to the step's trailing ok and be recorded as success.
+write_or_fail() {
+    local path="$1"
+    if ! cat >"${path}"; then
+        err "Failed to write ${path}"
+        return 1
+    fi
+}
+
 print_summary() {
     local entry name status
     echo
@@ -179,13 +192,20 @@ step_sanity() {
         err "HOME is not set; cannot determine install paths."
         exit 1
     fi
+    if [[ ! -d "${HOME}" || ! -w "${HOME}" ]]; then
+        err "HOME (${HOME}) is not a writable directory; cannot install."
+        exit 1
+    fi
     if ! command -v python3 >/dev/null 2>&1; then
         err "python3 is required (the control window, tray and monitor are Python); install it and re-run."
         exit 1
     fi
-    mkdir -p "${DATA_DIR}" "${CONFIG_DIR}" "${APPS_DIR}" \
+    if ! mkdir -p "${DATA_DIR}" "${CONFIG_DIR}" "${APPS_DIR}" \
         "${SYSTEMD_USER_DIR}" "${ICON_THEME_DIR}" \
-        "$(dirname "${GNOME_EXT_DIR}")" "${HOME}/.local/bin"
+        "$(dirname "${GNOME_EXT_DIR}")" "${HOME}/.local/bin"; then
+        err "Cannot create the MicSource install directories under ${HOME}."
+        exit 1
+    fi
 }
 
 step_assets() {
@@ -207,8 +227,14 @@ step_assets() {
     fi
     chmod 755 "${DATA_DIR}/micsource" "${DATA_DIR}/micsource-gui" \
         "${DATA_DIR}/micsource-build" "${DATA_DIR}/micsource-app.py" \
-        "${DATA_DIR}/micsource-tray.py" "${DATA_DIR}/micsource-monitor.py"
-    printf '%s\n' "${PROJECT_ROOT}" >"${DATA_DIR}/project.path"
+        "${DATA_DIR}/micsource-tray.py" "${DATA_DIR}/micsource-monitor.py" || {
+        err "Failed to make the payload files executable in ${DATA_DIR}"
+        return 1
+    }
+    if ! printf '%s\n' "${PROJECT_ROOT}" >"${DATA_DIR}/project.path"; then
+        err "Failed to write ${DATA_DIR}/project.path"
+        return 1
+    fi
     ok "Payload files installed: ${DATA_DIR}"
 }
 
@@ -233,7 +259,10 @@ step_adb() {
         fi
         local url scratch zip
         url="https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
-        scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")"
+        scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")" || {
+            err "Could not create a download directory under ${DATA_DIR}."
+            return 1
+        }
         TMP_DIRS+=("${scratch}")
         zip="${scratch}/platform-tools.zip"
         info "Downloading platform-tools..."
@@ -331,7 +360,10 @@ step_build_env() {
     local jdk_url="https://api.adoptium.net/v3/binary/latest/17/ga/linux/${arch}/jdk/hotspot/normal/eclipse"
     local tools_url="https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
     local scratch jdk_file tools_file tools_tmp
-    scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")"
+    scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")" || {
+        err "Could not create a download directory under ${DATA_DIR}."
+        return 1
+    }
     TMP_DIRS+=("${scratch}")
     jdk_file="${scratch}/jdk.tar.gz"
     tools_file="${scratch}/cmdline-tools.zip"
@@ -486,7 +518,7 @@ step_config() {
         err "Cannot write config: ${CONFIG_PATH} exists and is not a regular file."
         return 1
     fi
-    cat >"${CONFIG_PATH}" <<'CONF'
+    write_or_fail "${CONFIG_PATH}" <<'CONF' || return 1
 # MicSource host configuration
 # Managed by linux-install/install.sh; edit by hand or re-run installer.
 
@@ -516,7 +548,10 @@ play_to_speakers = false
 # Expose the phone mic as a system input source named "phone-mic".
 virtual_mic = true
 CONF
-    chmod 600 "${CONFIG_PATH}"
+    chmod 600 "${CONFIG_PATH}" || {
+        err "Failed to set mode 600 on ${CONFIG_PATH}"
+        return 1
+    }
     ok "Config written: ${CONFIG_PATH}"
 }
 
@@ -524,15 +559,18 @@ step_desktop() {
     local icon_name="micsource"
 
     if [[ -f "${PROJECT_ROOT}/assets/icon.svg" ]]; then
-        cp -f "${PROJECT_ROOT}/assets/icon.svg" "${DATA_ICON}"
-        cp -f "${PROJECT_ROOT}/assets/icon.svg" "${ICON_PATH}"
+        if ! cp -f "${PROJECT_ROOT}/assets/icon.svg" "${DATA_ICON}" ||
+            ! cp -f "${PROJECT_ROOT}/assets/icon.svg" "${ICON_PATH}"; then
+            err "Failed to install the app icon into ${ICON_THEME_DIR}"
+            return 1
+        fi
         ok "App icon installed: ${ICON_PATH}"
     else
         icon_name="audio-input-microphone"
         warn "No SVG icon found; the launcher falls back to the themed mic icon."
     fi
 
-    cat >"${DESKTOP_FILE}" <<DESKEOF
+    write_or_fail "${DESKTOP_FILE}" <<DESKEOF || return 1
 [Desktop Entry]
 Type=Application
 Name=MicSource
@@ -560,7 +598,10 @@ step_cli() {
     elif [[ -e "${BIN_LINK}" ]]; then
         warn "${BIN_LINK} exists and is not a MicSource symlink; leaving it."
     else
-        ln -s "${CLI_PATH}" "${BIN_LINK}"
+        if ! ln -s "${CLI_PATH}" "${BIN_LINK}"; then
+            err "Failed to create the CLI symlink: ${BIN_LINK}"
+            return 1
+        fi
         ok "CLI symlink: ${BIN_LINK} -> ${CLI_PATH}"
     fi
 

@@ -84,6 +84,11 @@ data_dir_is_ours() {
 ##############################################################################
 # Safety gate
 ##############################################################################
+if [[ -z "${HOME:-}" ]]; then
+    err "HOME is not set; cannot determine the paths to remove."
+    exit 1
+fi
+
 if [[ "$EUID" -eq 0 ]]; then
     err "Do not run this uninstaller as root. Run as your normal user."
     exit 1

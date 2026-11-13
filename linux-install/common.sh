@@ -71,6 +71,12 @@ refuse_root() {
 }
 
 ##############################################################################
+# ${HOME} is expanded below at source time and both scripts run under
+# `set -u`, so an unset HOME must not abort inside this library: default it to
+# empty so the scripts can print their own "HOME is not set" diagnostic.
+: "${HOME:=}"
+
+##############################################################################
 # shellcheck disable=SC2034  # installed-layout vars are consumed by the
 # scripts that source this file; PROJECT_ROOT is used by install.sh only.
 CONFIG_DIR="${HOME}/.config/${APP_NAME}"
