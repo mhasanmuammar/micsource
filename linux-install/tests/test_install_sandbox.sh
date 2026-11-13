@@ -41,6 +41,8 @@ SAVED_SANDBOX_HOME=""
 SAVED_STUB_LOG=""
 SAVED_TEST_STDOUT=""
 SAVED_TEST_STDERR=""
+SAVED_COMBINED=""
+SAVED_TEST_XDG_DESKTOP=""
 
 SANDBOXES=()
 
@@ -92,6 +94,10 @@ assert_not_contains() { # assert_not_contains <file> <text>   (fixed-string)
     return 0
 }
 
+assert_matches() { # assert_matches <file> <extended-regex>
+    grep -Eq -- "$2" "$1" || fail_case "($1) does not match: $2"
+}
+
 assert_no_esc() { # assert_no_esc <file>   (no ANSI escape byte in the output)
     LC_ALL=C grep -q "$(printf '\033')" "$1" &&
         fail_case "($1) contains ESC bytes (colors must be empty for non-TTY output)"
@@ -105,21 +111,11 @@ assert_exit() { # assert_exit <expected> <actual>
 ##############################################################################
 # Harness: sandbox + logging stubs
 ##############################################################################
-make_sandbox() {
-    mkdir -p "${RUNTIME_ROOT}" # the sandbox tests never run without it
-    SANDBOX="$(mktemp -d "${RUNTIME_ROOT}/micsource-sandbox.XXXXXX")"
-    SANDBOXES+=("${SANDBOX}")
-    SANDBOX_HOME="${SANDBOX}/home"
-    STUBBIN="${SANDBOX}/stubbin"
-    STUB_LOG="${SANDBOX}/stub.log"
-    TEST_STDOUT="${SANDBOX}/stdout.txt"
-    TEST_STDERR="${SANDBOX}/stderr.txt"
-    COMBINED="${SANDBOX}/combined.txt"
-    TEST_XDG_DESKTOP=""
-    mkdir -p "${SANDBOX_HOME}" "${STUBBIN}"
-    : >"${STUB_LOG}"
-
-    # Install paths as the scripts under test compute them.
+# Derive every TEST_* path from SANDBOX/SANDBOX_HOME. make_sandbox and
+# restore_sandbox both call this so a restored sandbox always asserts against
+# its own paths (restoring only SANDBOX/HOME used to leave the previous
+# sandbox's TEST_* values behind, which made the round-trip case vacuous).
+derive_test_paths() {
     TEST_DATA_DIR="${SANDBOX_HOME}/.local/share/micsource"
     TEST_CONFIG_DIR="${SANDBOX_HOME}/.config/micsource"
     TEST_APPS_DIR="${SANDBOX_HOME}/.local/share/applications"
@@ -140,8 +136,27 @@ make_sandbox() {
     TEST_EXT_METADATA="${TEST_EXT_DIR}/metadata.json"
     TEST_SOCK="${TEST_DATA_DIR}/micsource.sock"
     TEST_CONFIG_INI="${TEST_CONFIG_DIR}/config.ini"
-    TEST_ADB_BUNDLE="${TEST_DATA_DIR}/adb-bundle/platform-tools/adb"
+    TEST_ADB_BUNDLE_DIR="${TEST_DATA_DIR}/adb-bundle"
+    TEST_ADB_BUNDLE="${TEST_ADB_BUNDLE_DIR}/platform-tools/adb"
     TEST_PROJECT_PATH="${TEST_DATA_DIR}/project.path"
+}
+
+make_sandbox() {
+    mkdir -p "${RUNTIME_ROOT}" # the sandbox tests never run without it
+    SANDBOX="$(mktemp -d "${RUNTIME_ROOT}/micsource-sandbox.XXXXXX")"
+    SANDBOXES+=("${SANDBOX}")
+    SANDBOX_HOME="${SANDBOX}/home"
+    STUBBIN="${SANDBOX}/stubbin"
+    STUB_LOG="${SANDBOX}/stub.log"
+    TEST_STDOUT="${SANDBOX}/stdout.txt"
+    TEST_STDERR="${SANDBOX}/stderr.txt"
+    COMBINED="${SANDBOX}/combined.txt"
+    TEST_XDG_DESKTOP=""
+    mkdir -p "${SANDBOX_HOME}" "${STUBBIN}"
+    : >"${STUB_LOG}"
+
+    # Install paths as the scripts under test compute them.
+    derive_test_paths
 
     # Logging stubs: every call appends "<name> <args>" to ${STUB_LOG}.
     # adb: get-state prints "offline" to stderr and exits 1; any other
@@ -178,6 +193,9 @@ run_script() { # run_script <stdin-bytes> <script> [args...]
             HOME="${SANDBOX_HOME}" \
             XDG_CURRENT_DESKTOP="${TEST_XDG_DESKTOP:-GNOME}" \
             GNOME_DESKTOP_SESSION_ID="" \
+            JAVA_HOME="" \
+            ANDROID_HOME="" \
+            NO_COLOR="" \
             STUB_LOG="${STUB_LOG}" \
             PATH="${STUBBIN}:/usr/bin:/bin" \
             bash "$@" \
@@ -190,13 +208,16 @@ combine_output() { # combine_output — merge the last run's stdout+stderr
 }
 
 # Save/restore the current sandbox's globals so a later case can keep using
-# it after an intermediate case switched to a fresh one.
+# it after an intermediate case switched to a fresh one. Paths are re-derived
+# on restore rather than saved, so they cannot drift from SANDBOX_HOME.
 save_sandbox() {
     SAVED_SANDBOX="${SANDBOX}"
     SAVED_SANDBOX_HOME="${SANDBOX_HOME}"
     SAVED_STUB_LOG="${STUB_LOG}"
     SAVED_TEST_STDOUT="${TEST_STDOUT}"
     SAVED_TEST_STDERR="${TEST_STDERR}"
+    SAVED_COMBINED="${COMBINED}"
+    SAVED_TEST_XDG_DESKTOP="${TEST_XDG_DESKTOP}"
 }
 
 restore_sandbox() {
@@ -206,6 +227,9 @@ restore_sandbox() {
     STUB_LOG="${SAVED_STUB_LOG}"
     TEST_STDOUT="${SAVED_TEST_STDOUT}"
     TEST_STDERR="${SAVED_TEST_STDERR}"
+    COMBINED="${SAVED_COMBINED}"
+    TEST_XDG_DESKTOP="${SAVED_TEST_XDG_DESKTOP}"
+    derive_test_paths
 }
 
 ##############################################################################
@@ -243,6 +267,16 @@ make_full_fixture() {
     : >"${TEST_DATA_DIR}/micsource"
     : >"${TEST_DATA_DIR}/micsource-monitor.py"
     : >"${TEST_DATA_DIR}/project.path"
+
+    # The monitor's control socket, so case 3's assert_gone is not vacuous.
+    python3 - "${TEST_SOCK}" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.bind(sys.argv[1])
+sock.close()
+PY
 }
 
 ##############################################################################
@@ -276,10 +310,10 @@ case_uninstall_full_removal() {
     start_case 3 "uninstall removes all fixture paths and calls systemd/gnome stubs"
     make_sandbox
     make_full_fixture
-    # y = confirm the uninstall; n = decline the adb-bundle question
-    # (the fixture includes the bundle because the PATH adb symlink only
-    # resolves when it exists). The data dir is wiped either way.
-    run_script $'y\nn\n' "${UNINSTALL}"
+    # y = confirm the uninstall; y = also remove the adb bundle (the fixture
+    # includes it because the PATH adb symlink only resolves when it exists).
+    # Case 14 covers declining that second prompt.
+    run_script $'y\ny\n' "${UNINSTALL}"
     assert_exit 0 "${RC}"
     assert_gone "${TEST_UNIT}"
     assert_gone "${TEST_DESKTOP}"
@@ -380,6 +414,11 @@ case_install_happy_path() {
         fail_case "stub.log records adb activity beyond get-state: ${bad_adb}"
     fi
     assert_contains "${STUB_LOG}" "systemctl --user daemon-reload"
+    # The installed assets are the audited copies: the CLI must carry its own
+    # warn()/ask() helpers and micsource-build must read project.path.
+    assert_matches "${TEST_DATA_DIR}/micsource" '^warn\(\)'
+    assert_matches "${TEST_DATA_DIR}/micsource" '^ask\(\)'
+    assert_matches "${TEST_DATA_DIR}/micsource-build" 'project\.path'
     save_sandbox
     end_case
 }
@@ -478,14 +517,26 @@ case_install_optional_skipped() {
 case_install_download_failure() {
     start_case 12 "failed bundle download records adb (FAILED), exits 0, cleans scratch"
     make_sandbox
-    # Download-only stub dir with NO adb on PATH: /usr/bin and /bin hold no
-    # adb on this machine and ~/.local/bin (where the real one lives) is
-    # deliberately absent. curl logs and exits 22; wget logs and exits 1 so
-    # the fallback can never reach the network either. The systemd/gnome
-    # stubs mirror the stubbin ones so the later required steps stay
-    # side-effect-free on the live session.
+    # Curated PATH (nothing else): symlinks to exactly the binaries install.sh
+    # needs, plus logging stubs. It contains NO adb (so the bundle branch is
+    # taken) and NO real curl/wget (so no host, even one with /usr/bin/adb or
+    # network access, can be touched — the old ${dlbin}:/usr/bin:/bin PATH
+    # leaked both). curl logs and exits 22; wget logs and exits 1.
     local dlbin="${SANDBOX}/dlstubbin"
     mkdir -p "${dlbin}"
+    local tool tool_path
+    for tool in bash uname dirname basename mktemp cp chmod cat mkdir ln \
+        rm mv grep head sed tail python3 tr readlink sleep; do
+        if tool_path="$(command -v "${tool}")"; then
+            ln -sf "${tool_path}" "${dlbin}/${tool}"
+        fi
+    done
+    # Never executed (the download fails first), but step_adb checks for it.
+    cat >"${dlbin}/unzip" <<'STUB'
+#!/bin/sh
+printf 'unzip %s\n' "$*" >> "${STUB_LOG}"
+exit 1
+STUB
     cat >"${dlbin}/curl" <<'STUB'
 #!/bin/sh
 printf 'curl %s\n' "$*" >> "${STUB_LOG}"
@@ -506,20 +557,28 @@ STUB
 printf 'gnome-extensions %s\n' "$*" >> "${STUB_LOG}"
 exit 0
 STUB
-    chmod +x "${dlbin}/curl" "${dlbin}/wget" "${dlbin}/systemctl" "${dlbin}/gnome-extensions"
+    chmod +x "${dlbin}/unzip" "${dlbin}/curl" "${dlbin}/wget" \
+        "${dlbin}/systemctl" "${dlbin}/gnome-extensions"
     RC=0
     printf 'y\nn\n' |
         env \
             HOME="${SANDBOX_HOME}" \
             XDG_CURRENT_DESKTOP="GNOME" \
             GNOME_DESKTOP_SESSION_ID="" \
+            JAVA_HOME="" \
+            ANDROID_HOME="" \
+            NO_COLOR="" \
             STUB_LOG="${STUB_LOG}" \
-            PATH="${dlbin}:/usr/bin:/bin" \
-            bash "${INSTALL}" \
+            PATH="${dlbin}" \
+            /usr/bin/bash "${INSTALL}" \
             >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
     assert_exit 0 "${RC}"
     combine_output
     assert_contains "${COMBINED}" "adb (FAILED)"
+    assert_contains "${STUB_LOG}" "curl "
+    # No command outside the curated dir may have run: a real adb would have
+    # logged "adb ..." through the stubbin stub, which is not on this PATH.
+    assert_not_contains "${STUB_LOG}" "adb get-state"
     local leftovers
     leftovers="$(find "${TEST_DATA_DIR}" -maxdepth 1 \( -name '.dl.*' -o -name '.platform-tools*' \) || true)"
     if [[ -n "${leftovers}" ]]; then
@@ -540,6 +599,71 @@ case_install_non_gnome() {
     assert_gone "${TEST_EXT_DIR}"
     combine_output
     assert_contains "${COMBINED}" "gnome_ext (skipped)"
+    end_case
+}
+
+##############################################################################
+# Case 14: uninstall keeps the adb bundle when the user declines it
+##############################################################################
+case_uninstall_keeps_bundle() {
+    start_case 14 "uninstall keeps the adb bundle when the prompt is declined"
+    make_sandbox
+    make_full_fixture
+    # y = confirm the uninstall; n = keep the adb bundle.
+    run_script $'y\nn\n' "${UNINSTALL}"
+    assert_exit 0 "${RC}"
+    assert_file "${TEST_ADB_BUNDLE}"
+    assert_file "${TEST_DATA_DIR}"
+    # Only the bundle survives: none of the other fixture paths may remain.
+    local leftovers
+    leftovers="$(find "${TEST_DATA_DIR}" -mindepth 1 -maxdepth 1 ! -name adb-bundle || true)"
+    if [[ -n "${leftovers}" ]]; then
+        fail_case "data dir kept more than the adb bundle: ${leftovers}"
+    fi
+    assert_gone "${TEST_CONFIG_DIR}"
+    assert_gone "${TEST_UNIT}"
+    assert_gone "${TEST_SOCK}"
+    combine_output
+    assert_contains "${COMBINED}" "Kept adb bundle at ${TEST_ADB_BUNDLE_DIR}"
+    end_case
+}
+
+##############################################################################
+# Case 15: --with-tray installs the autostart entry on a fresh HOME
+##############################################################################
+case_install_with_tray() {
+    start_case 15 "--with-tray writes the autostart entry on a fresh HOME"
+    make_sandbox
+    # n = decline the build env, n = decline the APK build.
+    run_script $'n\nn\n' "${INSTALL}" --with-tray
+    assert_exit 0 "${RC}"
+    assert_file "${TEST_AUTOSTART}"
+    assert_contains "${TEST_AUTOSTART}" "Exec=${TEST_DATA_DIR}/micsource-tray.py"
+    assert_contains "${TEST_AUTOSTART}" "X-GNOME-Autostart-enabled=true"
+    combine_output
+    assert_not_contains "${COMBINED}" "tray (FAILED)"
+    end_case
+}
+
+##############################################################################
+# Case 16: an unwritable required dir fails the step instead of recording ok
+##############################################################################
+case_install_readonly_config() {
+    start_case 16 "unwritable config dir fails the config step (exit 1, no complete)"
+    make_sandbox
+    # The dir exists (so step_sanity's mkdir -p succeeds) but cannot be
+    # written: the config step's write must be recorded as failed rather than
+    # falling through to "Config written" (set -e is suspended inside
+    # run_step's `||` context).
+    mkdir -p "${TEST_CONFIG_DIR}"
+    chmod 555 "${TEST_CONFIG_DIR}"
+    run_script $'n\nn\n' "${INSTALL}"
+    chmod 755 "${TEST_CONFIG_DIR}" # let the sandbox cleanup remove it
+    assert_exit 1 "${RC}"
+    combine_output
+    assert_contains "${COMBINED}" "config (FAILED)"
+    assert_not_contains "${COMBINED}" "install complete"
+    assert_gone "${TEST_CONFIG_INI}"
     end_case
 }
 
@@ -569,6 +693,9 @@ main() {
     case_install_optional_skipped
     case_install_download_failure
     case_install_non_gnome
+    case_uninstall_keeps_bundle
+    case_install_with_tray
+    case_install_readonly_config
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1
