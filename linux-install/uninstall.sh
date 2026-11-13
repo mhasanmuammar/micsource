@@ -219,6 +219,52 @@ fi
 ##############################################################################
 # 8. Remove config + data (with ownership guards)
 ##############################################################################
+# remove_data_dir: delete DATA_DIR, honouring a "keep the adb bundle" answer.
+# The bundle lives inside DATA_DIR, so a decline moves it (and only it) to a
+# temporary directory outside DATA_DIR first and restores it afterwards.
+# Returns non-zero (leaving DATA_DIR untouched) when the bundle cannot be
+# stashed, so a failed move never destroys it.
+remove_data_dir() {
+    local bundle_keep=""
+    if [[ -d "${ADB_BUNDLE_DIR}" ]]; then
+        echo
+        warn "The adb bundle was installed at: ${ADB_BUNDLE_DIR}"
+        info "You may want to keep it if you use adb for other purposes."
+        if confirm "Remove the adb bundle too?"; then
+            rm -rf -- "${ADB_BUNDLE_DIR}"
+            ok "Removed adb bundle."
+        else
+            bundle_keep="$(mktemp -d "${TMPDIR:-/tmp}/micsource-adb-keep.XXXXXX")" || bundle_keep=""
+            if [[ -z "${bundle_keep}" ]]; then
+                err "Could not create a temporary directory for the adb bundle."
+                err "Leaving ${DATA_DIR} untouched so the bundle is not lost."
+                return 1
+            fi
+            if ! mv -- "${ADB_BUNDLE_DIR}" "${bundle_keep}/adb-bundle"; then
+                err "Could not move the adb bundle aside; leaving ${DATA_DIR} untouched."
+                rmdir -- "${bundle_keep}" 2>/dev/null || true
+                return 1
+            fi
+        fi
+    fi
+
+    rm -rf -- "${DATA_DIR}" || {
+        err "Could not remove ${DATA_DIR}"
+        return 1
+    }
+    ok "Removed data dir: ${DATA_DIR}"
+
+    if [[ -n "${bundle_keep}" ]]; then
+        if ! mkdir -p "${DATA_DIR}" ||
+            ! mv -- "${bundle_keep}/adb-bundle" "${ADB_BUNDLE_DIR}"; then
+            err "Could not restore the adb bundle; it is parked at ${bundle_keep}/adb-bundle."
+            return 1
+        fi
+        rmdir -- "${bundle_keep}" 2>/dev/null || true
+        ok "Kept adb bundle at ${ADB_BUNDLE_DIR}"
+    fi
+}
+
 if [[ -d "$CONFIG_DIR" ]]; then
     if [[ -f "${CONFIG_DIR}/config.ini" ]]; then
         rm -rf -- "${CONFIG_DIR}"
@@ -231,20 +277,8 @@ fi
 if [[ -d "$DATA_DIR" ]]; then
     if ! data_dir_is_ours; then
         warn "Data dir exists but contains no MicSource files; leaving it untouched."
-    else
-        if [[ -d "${ADB_BUNDLE_DIR}" ]]; then
-            echo
-            warn "The adb bundle was installed at: ${ADB_BUNDLE_DIR}"
-            info "You may want to keep it if you use adb for other purposes."
-            if confirm "Remove the adb bundle too?"; then
-                rm -rf -- "${ADB_BUNDLE_DIR}"
-                ok "Removed adb bundle."
-            else
-                info "Kept adb bundle at ${ADB_BUNDLE_DIR}"
-            fi
-        fi
-        rm -rf -- "${DATA_DIR}"
-        ok "Removed data dir: ${DATA_DIR}"
+    elif ! remove_data_dir; then
+        warn "The rest of the uninstall completed, but ${DATA_DIR} was left in place."
     fi
 fi
 
