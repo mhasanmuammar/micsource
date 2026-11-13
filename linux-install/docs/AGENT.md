@@ -107,8 +107,9 @@ they are too small to gain from extraction.
 other flag prints usage on stderr and exits 2.
 
 **Sanity preflight (`step_sanity`):** refuses root, requires Linux
-(`uname -s`), requires `$HOME` and `python3` (with a distro hint), then
-creates the target dirs. It runs bare, not through `run_step`: a failure
+(`uname -s`), requires `$HOME` and `python3` (the failure message only says
+it is required and to install it — no per-distro hint), then creates the
+target dirs. It runs bare, not through `run_step`: a failure
 aborts before anything is installed.
 
 **Step bookkeeping.** Every other step runs through `run_step`, which records
@@ -466,10 +467,13 @@ from the tray menu's "Open Control Window".
 - Icon: `micsource` (installed SVG) with fallback `audio-input-microphone`.
 - Tray script stays on Gtk 3 and tries `AppIndicator3` first, falling back
   to `AyatanaAppIndicator3` aliased as `AppIndicator3` (identical API).
-  The tray is **opt-in**: `install.sh --with-tray` keeps the old behaviour
-  (install-time binding offer + XDG autostart entry at
-  `~/.config/autostart/micsource-tray.desktop`). Otherwise the control
-  window's Preferences toggle (Startup & Panel → Tray Icon)
+  The tray is **opt-in**: `install.sh --with-tray` only writes the XDG
+  autostart entry at `~/.config/autostart/micsource-tray.desktop`. The
+  binding probe in `step_tray` runs in **both** modes: it tries the same
+  Gtk 3 + AppIndicator/Ayatana imports as the tray script and, on failure,
+  only prints a warning (no offer, no prompt, nothing installed).
+  Otherwise the control window's Preferences toggle (Startup & Panel →
+  Tray Icon)
   - prefights the bindings in a **subprocess** (`_tray_bindings_ok()` —
     `Gtk 3.0` + AppIndicator/Ayatana import; Gtk 3 is never imported into
     the app's own Gtk 4 process) and fails with the exact packages
@@ -677,11 +681,18 @@ replacement leaves the previous recording pipeline wedged).
   `export PATH="$HOME/.local/bin:$PATH"`.
 - Tested on GNOME (X11/Wayland). The tray uses `Gtk 3.0` +
   `AppIndicator3`/`AyatanaAppIndicator3`, which works on GNOME with
-  AppIndicator support and most other XDG desktops. On GNOME without it the
-  icon cannot appear (GNOME ships no native tray area): the missing binding is
-  logged to `tray.log`, an explicit tray launch exits 1 rather than opening a
-  second window, and the micsource-tile GNOME extension is the top-bar
-  alternative there (ES-module, GNOME Shell 47+).
+  AppIndicator support and most other XDG desktops. Two distinct failure
+  modes:
+  - **Missing Python bindings** (PyGObject/`Gtk 3.0` or the
+    AppIndicator/Ayatana client): the tray does not run at all — the import
+    error is logged to `tray.log` and an explicit tray launch exits 1 rather
+    than opening a second window.
+  - **Bindings present but GNOME lacks the AppIndicator Shell extension**
+    (`appindicatorsupport@rgcjonas.gmail.com`): the tray process runs fine
+    and logs nothing, but GNOME ships no native tray area, so the icon is
+    invisible.
+  The micsource-tile GNOME extension is the top-bar alternative in both
+  cases (ES-module, GNOME Shell 47+).
 - `systemctl --user` is required for the background service; without it the
   unit file is still installed but not activated.
 - `paplay` required for audio; without it the install succeeds but playback
@@ -782,7 +793,10 @@ The following defects were present in the previous version and are fixed:
 ## Safety / audit checklist
 
 - [x] Installer refuses to run as root.
-- [x] All writes are under `~/.local` and `~/.config` (user space only).
+- [x] All writes are under `~/.local` and `~/.config` (user space only),
+  except `${PROJECT_ROOT}/local.properties`, which `step_build_env` creates
+  when it installs the portable SDK (writes only if absent; it is the
+  checkout's gitignored Android SDK pointer).
 - [x] No system package installation without explicit user confirmation.
 - [x] adb bundle download is over HTTPS from `dl.google.com`; checksum not
   pinned (future improvement: verify SHA256).
