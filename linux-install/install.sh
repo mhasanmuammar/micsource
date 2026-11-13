@@ -617,7 +617,13 @@ step_cli() {
 
 step_tray() {
     if [[ "${WITH_TRAY}" -eq 1 ]]; then
-        cat >"${AUTOSTART_FILE}" <<AUTOEOF
+        local autostart_dir
+        autostart_dir="$(dirname "${AUTOSTART_FILE}")"
+        if ! mkdir -p "${autostart_dir}"; then
+            err "Failed to create ${autostart_dir}"
+            return 1
+        fi
+        write_or_fail "${AUTOSTART_FILE}" <<AUTOEOF || return 1
 [Desktop Entry]
 Type=Application
 Name=MicSource Tray
