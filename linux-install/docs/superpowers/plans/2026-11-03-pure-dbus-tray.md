@@ -1,5 +1,17 @@
 # Pure D-Bus Tray Implementation Plan
 
+> **Status (2026-11-13): fully superseded and reverted — do not implement.**
+> This plan was implemented (commits `021d1aa`, `e2ccb1b`, `94a9890`), but the
+> pure-D-Bus tray failed at startup with `'DBusConnection' object has no
+> attribute 'own_name'`. By user decision on 2026-11-13 the deployed tray/app
+> were rolled back to the AppIndicator versions and
+> `linux-install/assets/` was re-seeded from that rollback (commit `0417ea7`);
+> `linux-install/tests/test_tray_model.py` was deleted with the reverted code
+> (commit `67af9c6`). The plan's commits remain in git history, but **no part
+> of this plan describes shipped behavior**. The installer work it referenced
+> became asset seeding instead — see
+> `../specs/2026-11-07-installer-assets-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the tray's Gtk-3/AppIndicator client with a pure GLib/Gio
@@ -22,6 +34,8 @@ stdlib `unittest` with a fake-`gi` stub (the sandbox has no gi).
 - The deployed files (`~/.local/share/micsource/*`) are the source of
   truth; installer heredocs are spliced from them and must remain
   **byte-identical** (verify with the splice-verify snippet in Task 4).
+  *(Historical constraint, superseded: the repo assets are now the source of
+  truth; see the status note above.)*
 - No new host dependencies: stdlib + `python3-gi` (`GLib`/`Gio`) only.
 - English UI strings; no destructive commands.
 - Tray icon id / app id stays `micsource`; object paths:
@@ -350,6 +364,14 @@ git commit --allow-empty -m "chore: tray preflight switched to D-Bus watcher pro
 ---
 
 ### Task 4: Installer splice + docs
+
+> **Superseded on 2026-11-07, then made obsolete by the 2026-11-13 revert.**
+> The installer-splice half became asset seeding: the deployed tray/app were
+> copied into `linux-install/assets/` by the asset-based installer work
+> (`../specs/2026-11-07-installer-assets-design.md`). The tray/app content
+> itself was reverted to AppIndicator (see the status note at the top of this
+> plan), so `test_tray_model.py` and the pure-D-Bus splice below no longer
+> exist. Do not execute these steps.
 
 **Files:**
 - Modify: `linux-install/install.sh` — splice tray + app heredocs from

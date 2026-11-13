@@ -9,7 +9,7 @@ Everything host-side is named **micsource** / **MicSource**:
 
 - Application ID: `micsource`
 - Dirs: `~/.config/micsource`, `~/.local/share/micsource`
-- Scripts: `micsource-app.py`, `micsource-tray.py`, `micsource-monitor.py`, `micsource-gui` (generated at install time)
+- Scripts: `micsource-app.py`, `micsource-tray.py`, `micsource-monitor.py`, `micsource-gui` (installed from `linux-install/assets/`)
 - Desktop file: `micsource.desktop`, desktop name "MicSource"
 - systemd unit: `micsource.service`
 - CLI: `~/.local/share/micsource/micsource`, symlinked to `~/.local/bin/micsource`
@@ -30,8 +30,19 @@ The host forward therefore maps `localabstract:micsource` (host) →
 
 ```
 linux-install/
-├── install.sh          # full installer (bash); generates the python/bash scripts
+├── install.sh          # installer orchestration (bash); copies the payloads
 ├── uninstall.sh        # safe uninstaller (bash) with ownership guards
+├── common.sh           # shared helpers, colors, and paths (sourced by both)
+├── assets/             # payload programs — the in-repo source of truth
+│   ├── micsource       # CLI dispatcher (bash)
+│   ├── micsource-gui   # launcher wrapper (bash)
+│   ├── micsource-build # build helper (bash)
+│   ├── micsource-app.py
+│   ├── micsource-tray.py
+│   ├── micsource-monitor.py
+│   └── gnome/          # extension.js, prefs.js, metadata.json
+├── tests/
+│   └── test_install_sandbox.sh  # sandboxed install/uninstall tests
 ├── README.md           # installation / usage / uninstallation guide
 └── docs/
     ├── USER.md         # end-user guide
@@ -42,15 +53,16 @@ Install-time artifacts (created by `install.sh`, owned by the user):
 
 ```
 ~/.local/share/micsource/
-├── micsource                   # CLI dispatcher (generated bash script)
+├── micsource                   # CLI dispatcher (copied from assets/micsource)
 ├── micsource-release.apk       # staged APK copy
 ├── apk.path                    # path to the source APK
 ├── adb.path                    # adb binary path used
+├── project.path                # path back to the checkout (micsource-build)
 ├── micsource-icon.svg          # app icon copy
-├── micsource-app.py            # desktop control window (generated)
-├── micsource-gui               # launcher wrapper for the window (generated)
-├── micsource-tray.py           # tray script (generated)
-├── micsource-monitor.py        # monitor script (generated)
+├── micsource-app.py            # control window (copied from assets/)
+├── micsource-gui               # launcher wrapper (copied from assets/)
+├── micsource-tray.py           # tray script (copied from assets/)
+├── micsource-monitor.py        # monitor script (copied from assets/)
 └── adb-bundle/                 # platform-tools (only if adb missing on host)
     └── platform-tools/adb
 ~/.local/bin/micsource                              # symlink -> data-dir CLI
@@ -63,9 +75,12 @@ Install-time artifacts (created by `install.sh`, owned by the user):
 ~/.local/share/gnome-shell/extensions/micsource-tile@micsource.local/
 ```
 
-Note: scripts are generated into `~/.local/share/micsource/`, NOT the repo —
-this keeps generated files out of the git tree and makes the desktop entry and
-systemd unit independent of where the repo lives.
+**Source-of-truth convention:** the payload programs live in
+`linux-install/assets/` — those are the only copies to edit. `install.sh`
+copies them into `~/.local/share/micsource/` (and `assets/gnome/` straight
+into the GNOME extension dir); the deployed copies are **outputs**, rewritten
+on every install. The desktop entry and systemd unit reference absolute
+user-space paths, so they stay independent of where the checkout lives.
 
 ## How the Android side works
 
@@ -81,7 +96,39 @@ The app (`fr.dzx.audiosource`) is an Android service that:
 
 ## Installer flow (`install.sh`)
 
-1. `step_sanity` — refuses to run as root; creates config/data/app/systemd dirs.
+`install.sh` (~720 lines) is orchestration only: the payload programs come
+from `linux-install/assets/`, and shared helpers/paths come from
+`linux-install/common.sh` (sourced by both install.sh and uninstall.sh). Only
+the genuinely templated, variable-expanding files (config.ini, desktop entry,
+XDG autostart entry, systemd unit, pipewire lock) remain as inline heredocs —
+they are too small to gain from extraction.
+
+**Arguments are strict.** `--with-tray` and `-h/--help` are accepted; any
+other flag prints usage on stderr and exits 2.
+
+**Sanity preflight (`step_sanity`):** refuses root, requires Linux
+(`uname -s`), requires `$HOME` and `python3` (with a distro hint), then
+creates the target dirs. It runs bare, not through `run_step`: a failure
+aborts before anything is installed.
+
+**Step bookkeeping.** Every other step runs through `run_step`, which records
+`ok` / `skipped` (exit 2) / `failed` and never aborts the run. `print_summary`
+prints one line per step, and the installer exits 1 iff a **required** step
+failed. Required: `assets`, `config`, `desktop`, `cli`, `systemd`. Optional:
+`adb`, `build_env`, `apk`, `device`, `tray`, `gnome_ext`, `pipewire` — their
+failure or skip is recorded, but the exit stays 0.
+
+**Downloads.** One `fetch` helper (curl preferred, wget fallback) backs every
+download. Scratch dirs are `mktemp -d` under the data dir, tracked in
+`TMP_DIRS`, and removed by an `EXIT` trap on success, failure, or interrupt.
+
+1. `step_assets` — copies the six payload files (`micsource`,
+   `micsource-gui`, `micsource-build`, `micsource-app.py`,
+   `micsource-tray.py`, `micsource-monitor.py`) from `assets/` into
+   `~/.local/share/micsource/`, then `chmod 755`s the entry points. A
+   missing or unreadable asset fails the step loudly. Also writes
+   `${DATA_DIR}/project.path` (the checkout root) for `micsource-build`.
+   `assets/gnome/` is deliberately not copied here (step 11).
 2. `step_adb` — detects `adb` (PATH or bundled). If missing, prompts to download
    the official Google platform-tools into `~/.local/share/micsource/adb-bundle/`.
    Writes the resolved binary path to `adb.path` in both branches (found / bundle
@@ -106,108 +153,126 @@ The app (`fr.dzx.audiosource`) is an Android service that:
    `app/build.gradle`: without the keystore the automatic debug key signs the
    APK). After the build it rescans the candidate list; stages the copy as
    `~/.local/share/micsource/micsource-release.apk`; writes `apk.path`.
-5. `step_device` — checks `adb get-state`; if device is online, installs the
+5. `step_device` — checks `adb get-state`; if a device is online, installs the
    APK (`adb install -r -t`), launches `fr.dzx.audiosource/.MainActivity`, and
    sets up `adb forward localabstract:micsource localabstract:audiosource`.
+   Reports the **real** forward result: a failed forward fails the step
+   (previously it printed "adb forward set" unconditionally). No device online
+   is a recorded skip, not a failure.
 6. `step_config` — writes `~/.config/micsource/config.ini` (mode 600), with
    `host_socket_name = micsource` and `device_socket_name = audiosource`.
 7. `step_desktop` — installs `micsource.desktop` (app drawer); its `Exec` is
    the `micsource-gui` wrapper, which opens the control window (or sends a
    desktop notification if PyGObject is missing). Also installs the project
-   SVG (`assets/icon.svg`) into `~/.local/share/icons/hicolor/scalable/
-   apps/micsource.svg`; falls back to the generic `audio-input-microphone`
-   themed icon when no SVG exists (a PNG is never copied under an `.svg`
-   name); refreshes the desktop database if `update-desktop-database` exists.
-8. `step_tray` — generates `micsource-tray.py` (executable) in the data
-   dir. Tray is **opt-in**: no autostart entry and no binding prompt by
-   default; `--with-tray` restores the old behaviour (autostart + binding
-   install offer). Without the flag the step warns when the
-   AppIndicator/Ayatana Python binding is missing and points at the app's
-   Preferences toggle.
-9. `step_systemd` — generates `micsource-monitor.py` and the systemd user unit
-   `micsource.service` (WantedBy=graphical-session.target,
-   Restart=on-failure). Tries `systemctl --user daemon-reload`.
-10. `step_cli` — generates the `micsource` bash dispatcher into the data dir and
-   symlinks it to `~/.local/bin/micsource` (guarded: an existing non-MicSource
-   file/symlink at that path is never replaced). Warns when `~/.local/bin` is
-   missing from PATH. CLI commands: `start` (enable+start the systemd unit, or
-   background-launch the monitor without systemd), `stop` (systemd stop +
-   best-effort `pkill -f` on the exact monitor path), `status` (queries the
-   control socket `micsource.sock` → `device=X forward=Y`, systemd unit state,
-   `adb get-state`, `adb forward --list`), `run` (foreground forwarding via the
-   monitor's `--run` mode until Ctrl+C), `tray`, `window` (exec `micsource-gui`
-   — opens the control window), `build-apk` (exec `micsource-build` — build +
-   stage the APK), `install-apk` (reinstall the staged APK +
-   `am start` + forward), `config` (`xdg-open`), `help`. `step_cli` also
-   generates `micsource-app.py` (the Gtk 4 + libadwaita control window; the
-   launcher's Exec target), the `micsource-gui` wrapper (bash; notifies
-   instead of failing silently when the GUI stack is missing), and
-   `micsource-build` (bash; build+stage with the managed JDK/SDK).
-11. `step_gnome_extension` — optional; writes `metadata.json`, `extension.js`,
-   `prefs.js` under
-   `~/.local/share/gnome-shell/extensions/micsource-tile@micsource.local/`.
-   Targets GNOME Shell 47+ (ES-module API, installer version 6) — a
-   **quick settings pill** (GSConnect-style `QuickMenuToggle`) instead of
-   the older `PanelMenu.Button` icon:
-   - `MicSourceToggle` extends `QuickSettings.QuickMenuToggle`
-     (`GObject.registerClass`, default-export `Extension` subclass —
-     above notes on export form and registerClass still apply). The pill
-     shows a live subtitle ("Service — off", the phone's model name while
-     streaming, "Disconnected", "starting…") and the mic icon
-     (`audio-input-microphone-symbolic`; state is conveyed by the
-     subtitle + the checked accent colour).
-   - Pill click toggles the background service through the CLI
-     (`micsource start/stop` — same code path as every other surface,
-     async `Gio.Subprocess`), followed by a fast 1.2 s re-poll
-     (`_refreshNext`) so `checked` reflects reality quickly. The pill
-     uses `toggleMode: false`: `checked` is set only from the polled
-     service state and gives the `.quick-toggle:checked` accent colour,
-     so a failed click never briefly lies. Icon is the same aligned
-     `audio-input-microphone-symbolic` in both states (the -muted
-     variant's x-badge visually misaligns the pill); state is conveyed
-     by the subtitle + accent colour. Breadcrumb
-     `log('MicSource: pill click -> service …')` aids journal debugging.
-   - The chevron expands the menu (HIG quick-settings pattern): header
-     (`menu.setHeader`) + two non-reactive status rows mirroring the
-     control window (**Device**: phone model name when known, else
-     connected/disconnected, **Monitoring**: on — streaming / on — waiting /
-     starting… / off) + actions (Start/Stop Service, Open Control Window).
-   - Status source: the micsource CLI `status` output is parsed
-     (`monitor: device=… name=…`, `systemd unit: …`,
-     `adb device state: …`) via an async subprocess every 4 s — no shell
-     main-loop blocking. The `name=` value feeds the pill subtitle and the
-     menu Device row.
-   - Status polling calls `communicate_utf8_async(null, cancellable, cb)`
-     — GJS wants stdin data FIRST; a `(cancellable, cb)` call crashes
-     every poll and freezes the pill on its fallback state ("off")
-     even though clicks work (verified via the journal on Shell 51).
-   - The pill subtitle label gets an inline `text-align: left;
-     padding-left: 0` pin so title and subtitle share the left edge
-     across shell point releases/themes (user-observed indent). The
-     label belongs to the *inner* `QuickToggle` — since GNOME 45
-     `QuickMenuToggle` wraps one instead of subclassing it, and there
-     is no `this._subtitle` on the toggle itself (a direct access
-     crashed `_init` on Shell 51 with "can't access property
-     'set_style', this._subtitle is undefined"). Resolve it via
-     `this._box?.get_first_child()?._subtitle` and only ever touch it
-     with optional chaining (`?.set_style`), so a future shell
-     re-layout degrades to skipping the pin instead of killing `_init`.
-   - Registered with
-     `Main.panel.statusArea.quickSettings.addExternalIndicator(indicator)`
-     — the older `Main.panel.addToStatusArea()` throws "Status indicator
-     must be an instance of PanelMenu.Button" for
-     `QuickSettings.SystemIndicator` on modern shells (observed on 51;
-     API exists since 47, metadata shell-version starts at 47). Pill
-     icons use the `iconName` string property and `menu.setHeader`
-     also takes an icon name string (NOT `Gio.ThemedIcon` objects).
-   - Removed `PanelMenu.Button`-based indicator entirely (no separate
-     top-bar icon; the pill lives in the quick settings grid). Shell
-     re-imports the module when the extension is disabled/re-enabled
-     (app Preferences → GNOME tile toggle, or log out/in).
+   SVG (`assets/icon.svg` at the repo root) into
+   `~/.local/share/icons/hicolor/scalable/apps/micsource.svg`; falls back to
+   the generic `audio-input-microphone` themed icon when no SVG exists (a PNG
+   is never copied under an `.svg` name); refreshes the desktop database if
+   `update-desktop-database` exists.
+8. `step_cli` — installs the `micsource` bash dispatcher and symlinks it to
+   `~/.local/bin/micsource` (guarded: an existing non-MicSource file/symlink
+   at that path is never replaced). Warns when `~/.local/bin` is missing from
+   PATH. The CLI defines its own `info`/`warn`/`err`/`ask`/`confirm` helpers
+   (the asset ships them; see the fixed bugs below). CLI commands: `start`
+   (enable+start the systemd unit, or background-launch the monitor without
+   systemd), `stop` (systemd stop + best-effort `pkill -f` on the exact
+   monitor path), `status` (queries the control socket `micsource.sock` →
+   `device=X forward=Y`, systemd unit state, `adb get-state`,
+   `adb forward --list`), `run` (foreground forwarding via the monitor's
+   `--run` mode until Ctrl+C), `tray`, `window` (exec `micsource-gui` — opens
+   the control window), `build-apk` (exec `micsource-build` — build + stage
+   the APK), `install-apk` (reinstall the staged APK + `am start` + forward),
+   `config` (`xdg-open`), `help`.
+9. `step_tray` — payload is already installed by `step_assets`. The tray is
+   **opt-in**: without flags there is no autostart entry; `--with-tray`
+   installs the XDG autostart entry at
+   `~/.config/autostart/micsource-tray.desktop` (the control window's
+   Preferences toggle can do the same later). In both cases the step probes
+   the same bindings the tray imports (`Gtk 3.0` plus AppIndicator3 or
+   AyatanaAppIndicator3 0.1) and, when they are missing, warns with the exact
+   package names (`gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`) and
+   points at the Preferences toggle / GNOME tile.
+10. `step_systemd` — writes the systemd user unit `micsource.service`
+    (WantedBy=graphical-session.target, Restart=on-failure); the monitor
+    payload was copied in step 1. Tries `systemctl --user daemon-reload`.
+11. `step_gnome_extension` — optional, and only on GNOME
+    (`gnome_desktop()`: `XDG_CURRENT_DESKTOP` or `GNOME_DESKTOP_SESSION_ID`
+    contains `GNOME`, case-insensitive — colon-separated values such as
+    `ubuntu:GNOME` work). On other desktops it info-skips (exit 2, recorded
+    `gnome_ext (skipped)`) and prints the manual install path:
+    copy `assets/gnome/` into
+    `~/.local/share/gnome-shell/extensions/micsource-tile@micsource.local/`
+    and enable the UUID. On GNOME it copies
+    `extension.js`, `prefs.js`, and `metadata.json` straight from
+    `assets/gnome/` into that dir (no copy in the data dir, so the installed
+    layout and uninstaller markers are unchanged).
+    Targets GNOME Shell 47+ (ES-module API, installer version 6) — a
+    **quick settings pill** (GSConnect-style `QuickMenuToggle`) instead of
+    the older `PanelMenu.Button` icon:
+    - `MicSourceToggle` extends `QuickSettings.QuickMenuToggle`
+      (`GObject.registerClass`, default-export `Extension` subclass —
+      above notes on export form and registerClass still apply). The pill
+      shows a live subtitle ("Service — off", the phone's model name while
+      streaming, "Disconnected", "starting…") and the mic icon
+      (`audio-input-microphone-symbolic`; state is conveyed by the
+      subtitle + the checked accent colour).
+    - Pill click toggles the background service through the CLI
+      (`micsource start/stop` — same code path as every other surface,
+      async `Gio.Subprocess`), followed by a fast 1.2 s re-poll
+      (`_refreshNext`) so `checked` reflects reality quickly. The pill
+      uses `toggleMode: false`: `checked` is set only from the polled
+      service state and gives the `.quick-toggle:checked` accent colour,
+      so a failed click never briefly lies. Icon is the same aligned
+      `audio-input-microphone-symbolic` in both states (the -muted
+      variant's x-badge visually misaligns the pill); state is conveyed
+      by the subtitle + accent colour. Breadcrumb
+      `log('MicSource: pill click -> service …')` aids journal debugging.
+    - The chevron expands the menu (HIG quick-settings pattern): header
+      (`menu.setHeader`) + two non-reactive status rows mirroring the
+      control window (**Device**: phone model name when known, else
+      connected/disconnected, **Monitoring**: on — streaming / on — waiting /
+      starting… / off) + actions (Start/Stop Service, Open Control Window).
+    - Status source: the micsource CLI `status` output is parsed
+      (`monitor: device=… name=…`, `systemd unit: …`,
+      `adb device state: …`) via an async subprocess every 4 s — no shell
+      main-loop blocking. The `name=` value feeds the pill subtitle and the
+      menu Device row.
+    - Status polling calls `communicate_utf8_async(null, cancellable, cb)`
+      — GJS wants stdin data FIRST; a `(cancellable, cb)` call crashes
+      every poll and freezes the pill on its fallback state ("off")
+      even though clicks work (verified via the journal on Shell 51).
+    - The pill subtitle label gets an inline `text-align: left;
+      padding-left: 0` pin so title and subtitle share the left edge
+      across shell point releases/themes (user-observed indent). The
+      label belongs to the *inner* `QuickToggle` — since GNOME 45
+      `QuickMenuToggle` wraps one instead of subclassing it, and there
+      is no `this._subtitle` on the toggle itself (a direct access
+      crashed `_init` on Shell 51 with "can't access property
+      'set_style', this._subtitle is undefined"). Resolve it via
+      `this._box?.get_first_child()?._subtitle` and only ever touch it
+      with optional chaining (`?.set_style`), so a future shell
+      re-layout degrades to skipping the pin instead of killing `_init`.
+    - Registered with
+      `Main.panel.statusArea.quickSettings.addExternalIndicator(indicator)`
+      — the older `Main.panel.addToStatusArea()` throws "Status indicator
+      must be an instance of PanelMenu.Button" for
+      `QuickSettings.SystemIndicator` on modern shells (observed on 51;
+      API exists since 47, metadata shell-version starts at 47). Pill
+      icons use the `iconName` string property and `menu.setHeader`
+      also takes an icon name string (NOT `Gio.ThemedIcon` objects).
+    - Removed `PanelMenu.Button`-based indicator entirely (no separate
+      top-bar icon; the pill lives in the quick settings grid). Shell
+      re-imports the module when the extension is disabled/re-enabled
+      (app Preferences → GNOME tile toggle, or log out/in).
+12. `step_pipewire` — writes the PipeWire stream-routing lock
+    (`~/.config/pipewire/pipewire-pulse.conf.d/10-micsource-stream-lock.conf`)
+    and best-effort restarts `pipewire-pulse` (see "Suggested improvements").
 
-Re-running install.sh is safe: it regenerates the scripts but **preserves an
-existing `~/.config/micsource/config.ini`** (delete that file to regenerate
-from scratch).
+Re-running install.sh is safe and idempotent: payload files are re-copied
+from `assets/` (deployed copies are outputs, not edit targets) and the
+templated files are rewritten, but an existing
+`~/.config/micsource/config.ini` is **preserved** (delete that file to
+regenerate from scratch).
 
 ## Control window (`micsource-app.py`) and launcher wrapper (`micsource-gui`)
 
@@ -372,17 +437,25 @@ from the tray menu's "Open Control Window".
   `build-env.path` (sourced shell fragment with `JAVA_HOME`/`ANDROID_HOME`).
   It also writes `sdk.dir` into the project's `local.properties` (only when
   absent). A system JDK/SDK takes precedence when already configured.
-- `micsource-build` (generated, project root baked in) sources `build-env.path`,
-  picks `assembleRelease` with `keystore.properties` / `assembleDebug`
-  otherwise, runs `./gradlew` `--no-daemon`, then stages the first found output
-  APK to `micsource-release.apk` and writes `apk.path`.
+- `micsource-build` (copied from `assets/micsource-build`) resolves
+  `PROJECT_ROOT` from `~/.local/share/micsource/project.path` (written by
+  `step_assets`) instead of hardcoding a path; a missing/empty file fails with
+  "project.path missing — re-run linux-install/install.sh from the project
+  checkout". It sources `build-env.path`, picks `assembleRelease` with
+  `keystore.properties` / `assembleDebug` otherwise, runs `./gradlew`
+  `--no-daemon`, then stages the first found output APK to
+  `micsource-release.apk` and writes `apk.path`.
 - Uninstaller data-dir markers include `build-env.path`; uninstalling removes
   the whole `build-env/` tree (JDK + SDK, ~1.5 GB) with the data dir.
 
 ## Tray script (`micsource-tray.py`)
 
-- Python 3, PyGObject (Gtk 3.0, with AppIndicator3 or AyatanaAppIndicator3
-  0.1 aliased to `AppIndicator3`).
+- Installed from `linux-install/assets/micsource-tray.py`: the repo asset is
+  the source of truth, the data-dir copy is an output.
+- Python 3, PyGObject: imports **Gtk 3.0**, then `AppIndicator3` 0.1, falling
+  back to `AyatanaAppIndicator3` 0.1 aliased to `AppIndicator3` (identical
+  API). Gtk 3 is required because the AppIndicator/Ayatana client bindings are
+  Gtk 3 only.
 - If `AppIndicator3` (or PyGObject) cannot be imported, the tray **logs the
   missing-binding error to `~/.local/share/micsource/tray.log` and exits
   1**. It used to `os.execvp` into `micsource-app.py` "as a fallback" —
@@ -422,11 +495,16 @@ from the tray menu's "Open Control Window".
 
 ## CLI dispatcher (`micsource`)
 
-Generated bash script in the data dir, symlinked to `~/.local/bin/micsource`.
+Copied from `linux-install/assets/micsource` into the data dir and symlinked to
+`~/.local/bin/micsource`.
 
-Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `install-apk`,
-`config`, `help` (unknown commands exit 2 with usage on stderr).
+Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `build-apk`,
+`install-apk`, `config`, `help` (unknown commands exit 2 with usage on stderr).
 
+- Defines its own `info`/`warn`/`err`/`ask`/`confirm` helpers (see the fixed
+  bugs below) — `micsource stop`'s SIGKILL path and `install-apk`'s
+  signature-conflict recovery prompt call `warn`/`ask` and used to die with
+  `command not found` (exit 127).
 - `resolve_adb()` precedence: `adb_path` from `config.ini` → `adb.path` file →
   bundled `adb-bundle/platform-tools/adb` → `adb` on PATH.
 - `status` queries the control socket (`micsource.sock`) with the same
@@ -568,6 +646,10 @@ replacement leaves the previous recording pipeline wedged).
 
 ## Uninstaller (`uninstall.sh`)
 
+- Sources `common.sh` (its duplicated helper/path block is gone); accepts
+  `-h/--help` and rejects unknown flags with exit 2. The section-6 header
+  (stream-routing lock, autostart entry, GNOME extension) is labelled
+  correctly.
 - Refuses to run as root; stops and disables the `micsource`
   systemd user service (if systemd available).
 - Without systemd, best-effort `pkill -f` on the exact monitor script path
@@ -576,9 +658,9 @@ replacement leaves the previous recording pipeline wedged).
   extension dir, adb bundle (after confirmation), config dir, data dir.
 - **Ownership guards:** `rm -rf` targets are only deleted when they contain
   MicSource's own marker files (`config.ini` for the config dir;
-  `adb.path` / `apk.path` / `micsource.sock` / the `micsource` CLI / the
-  generated window, tray and monitor scripts / `adb-bundle` for the data dir;
-  `metadata.json` for the extension).
+  `adb.path` / `apk.path` / `project.path` / `micsource.sock` / the
+  `micsource` CLI / the installed window, tray and monitor scripts /
+  `adb-bundle` for the data dir; `metadata.json` for the extension).
   A directory that happens to share the name is warned about and left
   untouched.
 - Removes the CLI symlink `~/.local/bin/micsource` only when it points at the
@@ -593,10 +675,12 @@ replacement leaves the previous recording pipeline wedged).
 - `~/.local/bin` is commonly on PATH (most distro default `.profile`); the
   installer detects and warns when it is not, and users may need
   `export PATH="$HOME/.local/bin:$PATH"`.
-- Tested on GNOME (X11/Wayland). Tray uses `AppIndicator3`, which works on
-  GNOME with AppIndicator support and most other XDG desktops. On GNOME
-  without it the tray falls back to opening the control window (GNOME ships
-  no native tray area) — the micsource-tile GNOME extension is the top-bar
+- Tested on GNOME (X11/Wayland). The tray uses `Gtk 3.0` +
+  `AppIndicator3`/`AyatanaAppIndicator3`, which works on GNOME with
+  AppIndicator support and most other XDG desktops. On GNOME without it the
+  icon cannot appear (GNOME ships no native tray area): the missing binding is
+  logged to `tray.log`, an explicit tray launch exits 1 rather than opening a
+  second window, and the micsource-tile GNOME extension is the top-bar
   alternative there (ES-module, GNOME Shell 47+).
 - `systemctl --user` is required for the background service; without it the
   unit file is still installed but not activated.
@@ -609,6 +693,34 @@ replacement leaves the previous recording pipeline wedged).
   quick settings pill, verified on Shell 51); legacy-`imports` extensions (GNOME 40–44) fail on
   modern Shell. GNOME has no native tray without the appindicator extension —
   the tile replaces the tray there.
+
+## Installer refactor (asset-copy model, 2026-11-07)
+
+- Payloads moved out of install.sh's embedded programs into
+  `linux-install/assets/` (real files, lintable and testable). install.sh
+  shrank from ~3,460 lines to ~720 lines of orchestration; `common.sh` holds
+  the shared helpers and paths.
+- Honest reporting replaced `|| true` on every step: each step records
+  ok/skipped/failed, a summary is printed, and the installer exits 1 iff a
+  required step failed. `step_device` reports the real forward result; the
+  GNOME extension installs only on a detected GNOME desktop.
+- `fetch()` + `mktemp` scratch dirs + `EXIT` trap replaced three copy-pasted
+  curl/wget blocks and fixed-name temp files; strict argument parsing rejects
+  unknown flags (exit 2) in both scripts; `uninstall.sh` gained `--help`.
+- `linux-install/tests/test_install_sandbox.sh` (13 cases) drives install and
+  uninstall in a fake `$HOME` with stub `adb`/`systemctl`/`gnome-extensions`
+  ahead of PATH; it covers strict args, the python3 preflight, the required-
+  vs-optional exit-code rule, download-failure cleanup, non-GNOME skip, the
+  install→uninstall round trip, idempotency, and the ownership guards.
+- **Bug fix 1:** the formerly generated CLI defined only `info()`/`err()`,
+  but `micsource stop`'s SIGKILL path and `install-apk`'s signature-conflict
+  recovery called `warn`/`ask` — those paths died with `command not found`
+  (exit 127). The CLI asset now ships `warn`/`ask`/`confirm`.
+- **Bug fix 2:** the formerly generated `micsource-build` hardcoded
+  `PROJECT_ROOT=/home/hasan/Projects/VIBE/micsource` inside a quoted
+  here-document (so it never expanded). It now reads
+  `~/.local/share/micsource/project.path`, written by `step_assets`, and
+  fails with a clear re-run message when it is missing.
 
 ## Added in this revision
 
@@ -682,6 +794,26 @@ The following defects were present in the previous version and are fixed:
 - [x] No destructive commands found in the current scripts (`rm -f` targets are
   explicit file paths; all `rm -rf` targets are guarded variables, never
   user-controlled).
+- [x] The payload source of truth is `linux-install/assets/`; deployed copies
+  under `~/.local/share/micsource/` are outputs overwritten on re-install (no
+  edit-deployed-then-sync workflow, no embedded payload programs in the
+  install path except the small variable-expanding templates).
+- [x] All shell code (`install.sh`, `uninstall.sh`, `common.sh`, the shell
+  assets, and the sandbox test) is `shellcheck`-clean with zero warnings and
+  `shfmt`-formatted (verified during the refactor); Python assets pass
+  `py_compile`; the GNOME JS assets pass `node --check`.
+- [x] `step_sanity` enforces a `python3` preflight (plus Linux and `$HOME`)
+  before anything is installed.
+- [x] Honest exit codes: every step records ok/skipped/failed, the summary
+  lists them, and the installer exits 1 iff a required step failed (it used to
+  print "install complete" and exit 0 unconditionally).
+- [x] Sandbox-verified: `linux-install/tests/test_install_sandbox.sh` (13
+  cases) runs install + uninstall against a fake `$HOME` with stubbed
+  `adb`/`systemctl`/`gnome-extensions` first on `PATH`.
+- [x] No-device-traffic guarantees: the sandbox stubs `adb` (offline for
+  `get-state`) and PATH-scopes every run, so tests never touch a connected
+  phone; the installer itself only installs/forwards when a device is already
+  online.
 
 ## Suggested improvements
 

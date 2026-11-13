@@ -36,7 +36,7 @@ The installer forwards the device socket to the host, mapping
 ## Requirements
 
 - Linux desktop (GNOME tested; works on most XDG desktops)
-- Python 3 with PyGObject (`gi.repository.Gtk`) for the control window and tray. `AppIndicator3` is needed for the tray icon only; when it is missing the launcher automatically opens the control window instead
+- Python 3 with PyGObject (`gi.repository.Gtk`) for the control window and tray. The tray icon additionally needs Gtk 3 + `AppIndicator3`/`AyatanaAppIndicator3` (`gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`); without them it logs the reason to `tray.log` and exits instead of opening a second window — use the control window or the GNOME tile there.
 - `paplay` (preferred) or `aplay` for audio playback
 - `pactl` (PulseAudio/PipeWire, installed by default on desktop Linux) for the virtual microphone
 - `adb` — detected automatically; if absent you will be prompted to install the official adb bundle (downloaded to `~/.local/share/micsource/adb-bundle/` and linked as `~/.local/bin/adb`)
@@ -117,9 +117,10 @@ conflicts).
 
 **Tray icon** (optional; `micsource tray`): shows connected/disconnected
 state, offers Start / Stop Service, Open Control Window, Open Config
-Folder, and Quit. If the AppIndicator3 API is unavailable, it automatically
-falls back to opening the control window. On GNOME without the appindicator
-extension, use the GNOME panel tile instead (see below).
+Folder, and Quit. It needs Gtk 3 + AppIndicator3/Ayatana; without those
+bindings it writes the error to `~/.local/share/micsource/tray.log` and exits
+rather than opening a second window. On GNOME without the appindicator
+extension, use the GNOME tile instead (see below).
 
 **Background monitor:** the systemd service sends desktop notifications when
 the device connects or disconnects.
@@ -201,12 +202,18 @@ packages, or an adb installed by your package manager.
 
 ## Files
 
-- `install.sh` — full installer
+- `install.sh` — installer orchestration (copies the payloads into your home)
 - `uninstall.sh` — simple, safe uninstaller
+- `common.sh` — shared helpers and paths used by both scripts
+- `assets/` — the payload programs (CLI, tray, monitor, control window, build
+  helper, GNOME extension); the repo copy is the source of truth
+- `tests/test_install_sandbox.sh` — sandboxed install/uninstall tests
 - `config.ini` — host configuration (created on install)
 - `docs/USER.md` — end-user guide
 - `docs/AGENT.md` — technical reference for agents/maintainers
 
-By default the control window, GUI wrapper, tray, monitor and `micsource` CLI
-scripts are generated into `~/.local/share/micsource/` at install time, with
-the CLI symlinked to `~/.local/bin/micsource` (see "What it installs").
+The control window, GUI wrapper, tray, monitor and `micsource` CLI are
+**copied from `linux-install/assets/`** into `~/.local/share/micsource/` at
+install time, with the CLI symlinked to `~/.local/bin/micsource` (see "What it
+installs"). The deployed copies are outputs — edit the assets, then re-run the
+installer; do not hand-edit the installed scripts.
