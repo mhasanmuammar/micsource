@@ -12,12 +12,14 @@
 > became asset seeding instead — see
 > `../specs/2026-11-07-installer-assets-design.md`.
 >
-> **Current status (2026-11-19): unfinished and deferred.** StatusNotifierItem
+> **DORMANT — NOT THE CURRENT PLAN. Do not spend time investigating, testing,
+> or implementing this issue unless the user explicitly brings it back.**
+> The tray menu issue is unfinished and deferred. StatusNotifierItem
 > support was implemented again from repository assets in commit `ab0614c`,
 > using `Gio.bus_get_sync()` and `Gio.DBusConnection.register_object()`. After
 > reinstalling and launching, the user confirmed the icon appears but clicking
-> it opens no menu. Debug this against a live desktop in a later cycle. The
-> user asked to focus on other plans first; do not make this the next task.
+> it opens no menu. Do not make this the next task or include it in current
+> work planning.
 > This is a separate implementation; do not resume this plan's stale steps or
 > its broken `own_name` approach.
 

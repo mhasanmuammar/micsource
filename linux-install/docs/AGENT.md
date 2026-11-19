@@ -455,11 +455,9 @@ from the tray menu's "Open Control Window".
 
 ## Tray script (`micsource-tray.py`)
 
-**Known unfinished issue (reported 2026-11-19):** after reinstall and launch,
-the user sees the tray/AppIndicator icon, but clicking it opens no menu. The
-StatusNotifierItem/dbusmenu implementation must be debugged against a live
-desktop before it is considered complete. This is deferred; the user asked to
-work on other plans first. Track it in
+**Dormant issue (not current work):** the user reported that the tray icon
+appears but clicking it opens no menu. Do not investigate, test, or plan work
+for this issue unless the user explicitly brings it back. See
 `docs/superpowers/plans/2026-11-03-pure-dbus-tray.md`.
 
 - Installed from `linux-install/assets/micsource-tray.py`: the repo asset is

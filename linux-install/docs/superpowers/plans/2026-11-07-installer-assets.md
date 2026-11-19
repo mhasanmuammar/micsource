@@ -11,6 +11,16 @@
 > device install, and a Gio StatusNotifierItem tray. Task 7's broader
 > lint/syntax checks and live-home checks remain unconfirmed.
 
+> **Task 7 progress (2026-11-19):** the sandbox suite passed 20/20, the tray
+> model passed 5/5, Python asset compilation and Bash syntax checks passed,
+> and deployed `micsource-app.py` / `micsource-tray.py` match the repository
+> assets. `shellcheck` and `shfmt` are unavailable in this environment (the
+> plan's `/tmp/opencode/bin` tool directory is absent). The user-session bus
+> is inaccessible (`systemctl --user` reports local transport permission
+> denied), so live service-state assertions and the installer rerun that
+> restarts PipeWire were not performed. These remain unconfirmed; do not mark
+> Task 7 complete on the strength of the partial checks.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Turn `linux-install/` into a lint-clean, asset-based installer: payloads live as real files under `linux-install/assets/` (the source of truth), both scripts share `common.sh`, the two audited bugs are fixed, and install/uninstall report honest results with honest exit codes.
@@ -401,7 +411,8 @@ for f in extension prefs; do cp "linux-install/assets/gnome/$f.js" "/tmp/opencod
 ```
 Expected: everything exits 0. Any failure → fix in the owning task's style, re-run, commit.
 
-- [ ] **Step 2: Drift re-diff (deployed vs assets)**
+- [x] **Step 2: Drift re-diff (deployed vs assets)** — both deployed Python files
+  matched their asset sources on 2026-11-19.
 
 ```bash
 diff linux-install/assets/micsource-app.py  ~/.local/share/micsource/micsource-app.py
