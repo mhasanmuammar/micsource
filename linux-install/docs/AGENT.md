@@ -43,12 +43,19 @@ linux-install/
 │   ├── micsource-monitor.py
 │   └── gnome/          # extension.js, prefs.js, metadata.json
 ├── tests/
-│   └── test_install_sandbox.sh  # sandboxed install/uninstall tests
+│   ├── test_install_sandbox.sh  # sandboxed install/uninstall tests (24 cases)
+│   ├── test_adb_routing.py      # isolated ADB server-port routing (unittest)
+│   ├── test_wireless_cli.py     # wireless pair/connect/discover (stubbed adb)
+│   └── test_tray_model.py       # tray menu/status model (unittest)
 ├── README.md           # installation / usage / uninstallation guide
 └── docs/
     ├── USER.md         # end-user guide
     └── AGENT.md        # this file
 ```
+
+The Android app lives at the repository root (`app/`); its JVM unit tests
+live in `app/src/test/java/fr/dzx/audiosource/` and run with
+`./gradlew testDebugUnitTest` (see "How the Android side works").
 
 Install-time artifacts (created by `install.sh`, owned by the user):
 
@@ -95,6 +102,40 @@ The app (`fr.dzx.audiosource`) is an Android service that:
   and writes PCM frames to the socket.
 - The host connects to the *host side* of the adb forward (`localabstract:
   micsource`) and plays the PCM stream.
+
+### Phone GUI and service/UI state architecture
+
+`MainActivity` is a normal (non-translucent) MicSource screen built in code:
+title, status line, permission summary, **Start microphone** / **Stop**
+controls, and a Wireless debugging panel (Android-version-aware help plus an
+**Open Developer options** shortcut). It binds to `RecordService` through a
+`LocalBinder` and receives state through a `StateListener` callback — the UI
+never infers streaming from "service is running".
+
+- `RecordService.State` = `STOPPED, PERMISSION_NEEDED, WAITING, STREAMING,
+  ERROR`. `RecordThread` publishes `WAITING` before `accept()`, `STREAMING`
+  when a host client connects, `ERROR` via `stopAfterFailure()` on
+  AudioRecord/socket failures; the service publishes `PERMISSION_NEEDED`
+  (start without mic permission — it stops itself) and `STOPPED` in
+  `onDestroy()`.
+- `StateStore` (plain Java) owns the current state and listener fan-out:
+  `publish()` updates state and notifies, `setListener()` replays the current
+  state to a newly attached listener, `setListener(null)` unsubscribes. It is
+  unit-tested on the JVM (`StateStoreTest`).
+- `MainActivity.stateLabel(state, micGranted)` maps state → label resource,
+  with "microphone permission needed" always winning when the permission is
+  missing; `MainActivity.permissionsToRequest(...)` computes the permission
+  set (notifications only on Android 13+). Both are pure helpers covered by
+  `UiStateTest`.
+- Permissions are requested in context: **Start microphone** requests what
+  is missing and only starts the recorder once the microphone is granted;
+  a denied permission shows the `PERMISSION_NEEDED` state with retry.
+- The foreground service and its notification keep the Stop action; screen
+  recreation rebinds without duplicating the recorder thread
+  (`onStartCommand` ignores a second start while the thread is alive).
+- Not covered by JVM tests (need a device/emulator): Start/Stop idempotency
+  under real service lifecycle, Activity re-binding across recreation, and
+  the on-device permission dialog flow.
 
 ## Installer flow (`install.sh`)
 
@@ -503,7 +544,10 @@ Copied from `linux-install/assets/micsource` into the data dir and symlinked to
 `~/.local/bin/micsource`.
 
 Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `build-apk`,
-`install-apk`, `config`, `help` (unknown commands exit 2 with usage on stderr).
+`install-apk`, `devices`, `device-select SERIAL`, `wireless-pair IP:PORT`,
+`wireless-connect IP:PORT`, `wireless-disconnect [IP:PORT]`,
+`wireless-discover`, `config`, `help` (unknown commands exit 2 with usage
+on stderr).
 
 - Defines its own `info`/`warn`/`err`/`ask`/`confirm` helpers (see the fixed
   bugs below) — `micsource stop`'s SIGKILL path and `install-apk`'s
@@ -523,6 +567,25 @@ Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `build-apk`,
   re-establishes the `localabstract:micsource -> localabstract:audiosource`
   forward. It first verifies signature integrity with `micsource-apk-verify`;
   this does not pin or authenticate a particular signer identity.
+- `devices` runs `adb devices -l` through `adb_run_all` (isolated port);
+  `device-select SERIAL` validates the serial is an authorized online device
+  and persists it as `[device] serial` (`none` clears it; see
+  "ADB port ownership and device selection").
+- `wireless-pair IP:PORT` validates the endpoint, then prompts for the
+  six-digit code with a **masked, non-echoing** read on a TTY (stdin when
+  piped), rejects anything that is not exactly six digits before invoking
+  adb, and pipes the code to `adb pair` **via stdin** — it never appears in
+  argv, logs, config, or shell history — and is `unset` afterwards.
+- `wireless-connect IP:PORT` runs `adb connect`, persists the connected
+  endpoint as the selected serial, then (re)creates the
+  `localabstract:micsource -> localabstract:audiosource` forward.
+  `wireless-disconnect [IP:PORT]` drops the connection, clears the selected
+  serial when it matches the endpoint, removes the forward, and restarts an
+  active monitor so audio tears down cleanly. `wireless-discover` prints
+  `adb mdns services` (already-paired devices; manual entry always works).
+- The control window (`micsource-app.py`) exposes the same flows as GUI
+  rows: **Refresh devices**, **Pair** (address + hidden code field),
+  **Connect**, **Discover**, **Disconnect** — all shelling out to this CLI.
 
 ## Monitor service (`micsource-monitor.py`)
 
@@ -598,6 +661,45 @@ Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `build-apk`,
 - `--run` foreground mode (used by the CLI's `micsource run`): sets up the
   forward, spawns the pump/player, and streams until Ctrl+C; skips the
   control socket and monitor loop entirely.
+
+## ADB port ownership and device selection
+
+**Port ownership.** All MicSource ADB traffic goes through one isolated
+local server port: `[adb] server_port` in `config.ini`, default **5038**;
+`5037` is reserved for the user's system ADB server and MicSource never
+binds or kills it. `adb_run()` (one-request path) prefixes every invocation
+with `-P <port>` and the selected `-s <serial>`; `adb_run_all()` (multi-
+device path: `devices`, `pair`, `connect`, `disconnect`, `mdns`) uses `-P`
+without `-s`. The system default port is rejected by validation
+(`test_adb_routing.py`), a busy port fails with a message naming the
+MicSource port (never a silent fallback to 5037), and the server binds
+loopback only. Coexistence is by design: MicSource's server and the system
+server run side by side on different ports.
+
+**Bundled adb stays private.** `step_adb` records the selected absolute adb
+path in `~/.local/share/micsource/adb.path`; the bundle lives under
+`~/.local/share/micsource/adb-bundle/`. MicSource never creates a bare
+`~/.local/bin/adb` link anymore (a legacy MicSource-owned one is removed on
+upgrade; a foreign link/file is preserved untouched), never changes global
+`PATH`, packages, or system services.
+
+**Selected serial flow.** `[device] serial` in `config.ini` is the single
+source of truth. `resolve_device_serial()` reads it (empty = ADB's
+single-device default); `write_device_serial()` rewrites the `[device]`
+section in place. Writers: `device-select` (validated against
+`adb devices -l`, `none` clears) and `wireless-connect` (persists the
+connected endpoint); `wireless-disconnect` clears it when it matches the
+dropped endpoint. `adb_run()` appends `-s <serial>` to every request, so
+status, forward, install, and monitoring all target the selected device.
+Tests: `test_wireless_cli.py` (selection + forward over the stubbed adb).
+
+**Package-ID compatibility.** The Android `applicationId`/namespace
+(`fr.dzx.audiosource`) and the device socket name (`audiosource`) are
+deliberately unchanged while the visible product name is **MicSource**: the
+host launches, installs, and forwards against these identifiers, and
+changing the package ID makes Android treat the app as a different one (no
+in-place update). Renaming the package is a separate migration touching
+install scripts, monitor, tray, GUI, config template, and docs together.
 
 ## Config file (`config.ini`)
 

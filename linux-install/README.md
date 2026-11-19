@@ -40,7 +40,7 @@ The installer forwards the device socket to the host, mapping
 - `paplay` (preferred) or `aplay` for audio playback
 - `pactl` (PulseAudio/PipeWire, installed by default on desktop Linux) for the virtual microphone
 - `adb` — detected automatically; if absent you will be prompted to install the official adb bundle under `~/.local/share/micsource/adb-bundle/`. MicSource keeps it private and uses its own local ADB server port (`5038`), separate from the system server (`5037`).
-- An Android device with USB debugging authorized
+- An Android device connected over **USB** (USB debugging authorized), or over **Wi-Fi** with Android 11+ Wireless debugging (phone and PC on the same network — see "Wireless (Wi-Fi) setup" below). The phone app shows a control screen with Start/Stop, permission status, and step-by-step Wireless debugging guidance.
 
 Java + Gradle (JDK 17) and an Android SDK are only needed if you want the
 installer to **build** the APK from source. The installer offers to set both
@@ -99,6 +99,12 @@ micsource tray           # launch the tray icon
 micsource window         # open the desktop control window
 micsource build-apk      # build the APK from source and stage it
 micsource install-apk    # (re)install the staged APK + set up the forward
+micsource devices        # list USB and Wi-Fi devices
+micsource device-select SERIAL   # choose which phone MicSource uses ('none' clears)
+micsource wireless-pair IP:PORT  # pair via Wireless debugging (masked code prompt)
+micsource wireless-connect IP:PORT    # connect to the separate Wi-Fi endpoint
+micsource wireless-disconnect [IP:PORT] # drop a Wi-Fi connection
+micsource wireless-discover      # show paired Wi-Fi devices found by ADB mDNS
 micsource config         # open the config folder
 micsource help
 ```
@@ -106,6 +112,26 @@ micsource help
 If bash says `micsource: command not found`, add `~/.local/bin` to your PATH
 (`export PATH="$HOME/.local/bin:$PATH"`). The installer warns when it detects
 that this directory is missing from PATH.
+
+## Wireless (Wi-Fi) setup
+
+Instead of a USB cable, an Android 11+ phone can connect over your local
+network (phone and PC on the same Wi-Fi network):
+
+1. On the phone: **Developer options → Wireless debugging** → **Pair device
+   with pairing code**; note the six-digit code and the `Pairing IP:port`.
+2. On the PC: `micsource wireless-pair IP:PORT` (prompts for the code with
+   hidden input; it is passed to adb over stdin and never stored).
+3. Note the separate `Connect IP:port` shown on the phone, then run
+   `micsource wireless-connect IP:PORT` — the audio socket forward and the
+   selected device are restored automatically.
+
+The same flows live in the control window (**Connected devices** group:
+Refresh devices / Pair / Connect / Discover / Disconnect). Use
+`micsource devices` and `micsource device-select SERIAL` to pick between
+multiple phones; the choice persists in `config.ini`. USB debugging remains
+fully supported alongside Wi-Fi. Full steps and troubleshooting:
+`docs/USER.md`.
 
 ## Usage
 

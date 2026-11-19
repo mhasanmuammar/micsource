@@ -2,13 +2,16 @@
 
 MicSource lets you use your Android phone's microphone as an input device on
 your Linux computer. The phone records audio and sends it to your PC over a USB
-adb connection; the PC exposes it as a real microphone ("phone-mic") that every
-app can use, and — if you opt in — can also play it through the speakers.
+or Wi-Fi adb connection; the PC exposes it as a real microphone ("phone-mic")
+that every app can use, and — if you opt in — can also play it through the
+speakers.
 
 ## First-time setup
 
 1. On your Android phone, enable **Developer options** and turn on **USB
-   debugging**.
+   debugging**. (To use Wi-Fi instead of a cable, see
+   [Connecting over Wi-Fi](#connecting-over-wi-fi-wireless-debugging) below —
+   it needs Android 11 or newer.)
 2. Connect the phone to your Linux PC with a USB cable.
 3. On the phone, accept the "Allow USB debugging?" dialog when it appears.
 4. Open a terminal on your PC and run the installer:
@@ -31,6 +34,56 @@ app can use, and — if you opt in — can also play it through the speakers.
    (the installer tells you the binding package when it is missing).
 6. When the installer finishes, launch **MicSource** from your app drawer —
    the MicSource control window opens, showing the status and control buttons.
+
+## Connecting over Wi-Fi (Wireless debugging)
+
+Instead of a cable, Android 11+ phones can connect over your local network.
+Requirements: **Android 11 or newer**, phone and PC on the **same Wi-Fi
+network**, and Wi-Fi enabled on the phone. Pairing is always started from
+the computer; the phone only shows the temporary addresses and code.
+
+1. On the phone: **Settings → Developer options → Wireless debugging** (turn
+   it on).
+2. Tap **Pair device with pairing code**. The phone shows a six-digit code
+   plus a `Pairing IP:port` (e.g. `192.168.1.20:41000`) — both are temporary
+   and change each time.
+3. On the PC, pair (the code is typed at a hidden prompt; it is never saved
+   to files, logs, or shell history):
+
+   ```bash
+   micsource wireless-pair 192.168.1.20:41000
+   ```
+
+4. The Wireless debugging screen now shows a **Connect IP:port** address
+   (different from the pairing port). Connect to it:
+
+   ```bash
+   micsource wireless-connect 192.168.1.20:38000
+   ```
+
+5. That is it — the mic socket forward is re-established automatically and
+   the selected device is remembered. `micsource status` should show the
+   device online.
+
+You can do the same from the control window: the **Connected devices** group
+has **Pair**, **Connect**, **Refresh devices**, **Discover**, and
+**Disconnect** fields/buttons for the same addresses.
+
+- **Reconnect after Wi-Fi loss / IP change:** run `micsource
+  wireless-connect IP:PORT` again with the phone's current address (the
+  phone shows it in Developer options → Wireless debugging). If pairing was
+  never lost, no re-pairing is needed.
+- **Multiple phones:** run `micsource devices` to list serials, then
+  `micsource device-select SERIAL` to pick which one MicSource uses (stored
+  in the config; `micsource device-select none` clears it).
+- **mDNS convenience:** `micsource wireless-discover` lists already-paired
+  Wi-Fi devices ADB finds on the network (needs multicast; if it finds
+  nothing, manual address entry always works).
+- **Forget this computer on the phone:** in **Developer options → Wireless
+  debugging**, open the paired-computer entry and remove it (wording varies
+  by Android version), or revoke all host authorizations with **Revoke USB
+  debugging authorizations**. The next connection then asks for a fresh
+  pairing.
 
 ## Daily use
 
@@ -88,6 +141,12 @@ micsource tray           # launch the tray icon
 micsource window         # open the desktop control window
 micsource build-apk      # build the APK from source and stage it
 micsource install-apk    # (re)install the APK on the phone and set up the forward
+micsource devices        # list USB and Wi-Fi devices (adb devices -l)
+micsource device-select SERIAL   # select which phone MicSource uses ('none' clears)
+micsource wireless-pair IP:PORT  # pair via Wireless debugging (asks for the code)
+micsource wireless-connect IP:PORT    # connect to the separate Wi-Fi endpoint
+micsource wireless-disconnect [IP:PORT] # drop a Wi-Fi connection
+micsource wireless-discover      # show paired Wi-Fi devices found by ADB mDNS
 micsource config         # open the config folder
 micsource help
 ```
@@ -102,7 +161,9 @@ Edit `~/.config/micsource/config.ini` (or open "Open Config Folder" from the
 tray menu). Common settings:
 
 - `serial` — the serial number of your Android device (useful if you have more
-  than one). Leave blank to use the first device.
+  than one). Leave blank to use the first device. Prefer setting it with
+  `micsource device-select SERIAL` (or **Refresh devices** in the control
+  window) — both USB and Wi-Fi serials work, and the choice is remembered.
 - `backend` — `auto` (uses `paplay`, falls back to `aplay`).
 - `adb_path` — only needed if your adb lives somewhere unusual.
 - `server_port` — MicSource's local ADB server port (default `5038`; system
@@ -160,6 +221,11 @@ there unless you uninstall it separately).
 | Phone sound suddenly comes out of the PC speakers (without `play_to_speakers`) | The audio policy re-routed the stream; the service repairs this itself within ~5 s. If it recurs, `micsource stop && micsource start`, and re-run install.sh so `~/.config/pipewire/pipewire-pulse.conf.d/10-micsource-stream-lock.conf` is restored. |
 | Monitoring stuck at 0 seconds | Confirm RECORD_AUDIO was granted on the phone (and the app can record — check its notification says "recording"). If audio stalls after an APK reinstall, `micsource stop && micsource start` relaunches the phone app automatically; the monitor also self-recovers within ~20 s. |
 | `adb: command not found` | Re-run `./install.sh` and agree to install the private ADB bundle. MicSource uses the selected binary directly; it does not need `adb` on your shell `PATH`. |
+| Wireless pairing fails ("already paired", wrong code, or timeout) | Codes and pairing addresses are temporary — open **Pair device with pairing code** on the phone again and use the fresh `Pairing IP:port` and code immediately; pair and connect ports are different, so use the **Connect IP:port** for `wireless-connect`. |
+| Phone and PC on different networks / pairing finds nothing | Both devices must be on the same Wi-Fi network; guest/AP-isolated networks block device-to-device traffic. If mDNS discovery finds nothing (`micsource wireless-discover`), multicast may be blocked — enter the addresses manually. |
+| Wi-Fi connection dropped after sleep or network change | Re-run `micsource wireless-connect IP:PORT` with the phone's current address from **Developer options → Wireless debugging**; re-pair only if the phone forgot this computer. |
+| Multiple phones connected, wrong one used | `micsource devices` lists serials; `micsource device-select SERIAL` picks the one MicSource uses (the control window's **Refresh devices** does the same). |
+| `MicSource ADB server port 5038 is unavailable` | Another process holds MicSource's isolated ADB port. Free the port or set a different one in `server_port` (never `5037` — that is reserved for the system ADB server, which MicSource leaves alone). |
 | `micsource: command not found` | Add `~/.local/bin` to your PATH: `export PATH="$HOME/.local/bin:$PATH"`. |
 | Service won't start | Run `systemctl --user status micsource` and `journalctl --user -u micsource -f` for logs. |
 | Installer can't build the APK | First run of Gradle downloads dependencies and needs network. If it still fails, re-run `./install.sh` and accept the "portable build environment" prompt, check `journalctl`/the activity log in the control window, or place a prebuilt APK at `~/.local/share/micsource/micsource-release.apk`. |

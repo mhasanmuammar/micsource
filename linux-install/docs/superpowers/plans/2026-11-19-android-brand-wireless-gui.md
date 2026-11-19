@@ -109,7 +109,7 @@ message and allow a documented override rather than falling back to port
 
 ## Implementation tasks
 
-### 1. Isolate MicSource's ADB use
+### Task 1: Isolate MicSource's ADB use
 
 **Files:** `linux-install/install.sh`, `linux-install/uninstall.sh`,
 `linux-install/assets/micsource`, `micsource-app.py`, `micsource-monitor.py`,
@@ -134,7 +134,7 @@ message and allow a documented override rather than falling back to port
   controlled no-device environment; do not start a second ADB daemon beside
   the user's active phone connection during this task.
 
-### 2. Rebrand the Android app without changing its package identity
+### Task 2: Rebrand the Android app without changing its package identity
 
 **Files:** `app/build.gradle`, `app/src/main/AndroidManifest.xml`, Android
 resources, launcher/adaptive icons, `App.java`, notification/service strings,
@@ -150,7 +150,7 @@ and references/docs that present the phone app as Audio Source.
   launcher label/icon resources, and update installation over the existing
   `fr.dzx.audiosource` app with the expected signing key.
 
-### 3. Replace the permission-only activity with a real phone GUI
+### Task 3: Replace the permission-only activity with a real phone GUI
 
 **Files:** `MainActivity.java`, `RecordService.java`, `RecordThread.java`,
 layouts/themes/resources, and Android tests.
@@ -175,7 +175,7 @@ layouts/themes/resources, and Android tests.
 - Add unit/instrumentation coverage for permission states, state transitions,
   Start/Stop idempotency, and Activity/service rebinding.
 
-### 4. Add wireless pairing and connection to the Linux host
+### Task 4: Add wireless pairing and connection to the Linux host
 
 **Files:** host CLI, `micsource-app.py`, shared ADB helpers, monitor config,
 installer templates, tests, and user docs.
@@ -203,7 +203,7 @@ installer templates, tests, and user docs.
   Wireless debugging.
 - Keep USB auto-detection and current CLI workflows passing unchanged.
 
-### 5. End-to-end validation and documentation
+### Task 5: End-to-end validation and documentation
 
 - Add host tests with an ADB stub for pair/connect/device-list/serial/forward
   actions and for the dedicated server port. Add Android tests for GUI and
