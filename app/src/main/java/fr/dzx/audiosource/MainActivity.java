@@ -135,24 +135,37 @@ public class MainActivity extends Activity {
     }
 
     private void requestMissingPermissions(boolean startWhenGranted) {
-        boolean needMicrophone = ContextCompat.checkSelfPermission(this,
-                Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED;
-        boolean needNotifications = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        boolean microphoneGranted = hasMicrophonePermission();
+        boolean notificationsGranted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && ContextCompat.checkSelfPermission(this,
-                Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED;
+                Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        boolean notificationsSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU;
 
-        if (!needMicrophone && !needNotifications) {
+        String[] requested = permissionsToRequest(microphoneGranted, notificationsGranted,
+                notificationsSupported);
+
+        if (requested.length == 0) {
             if (startWhenGranted) RecordService.start(this);
             updatePermissions();
             return;
         }
 
         startAfterPermission = startWhenGranted;
-        String[] requested = needMicrophone && needNotifications
-                ? new String[]{Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS}
-                : new String[]{needMicrophone ? Manifest.permission.RECORD_AUDIO
-                        : Manifest.permission.POST_NOTIFICATIONS};
         ActivityCompat.requestPermissions(this, requested, REQUEST_PERMISSIONS);
+    }
+
+    /** Permissions still needed before recording may start (empty = none). */
+    static String[] permissionsToRequest(boolean microphoneGranted, boolean notificationsGranted,
+            boolean notificationsSupported) {
+        boolean needMicrophone = !microphoneGranted;
+        boolean needNotifications = notificationsSupported && !notificationsGranted;
+        if (needMicrophone && needNotifications) {
+            return new String[]{Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.POST_NOTIFICATIONS};
+        }
+        if (needMicrophone) return new String[]{Manifest.permission.RECORD_AUDIO};
+        if (needNotifications) return new String[]{Manifest.permission.POST_NOTIFICATIONS};
+        return new String[0];
     }
 
     @Override
@@ -186,16 +199,21 @@ public class MainActivity extends Activity {
 
     private void showState(RecordService.State state) {
         if (statusView == null) return;
-        if (!hasMicrophonePermission()) state = RecordService.State.PERMISSION_NEEDED;
-        int label;
-        switch (state) {
-            case WAITING: label = R.string.state_waiting; break;
-            case STREAMING: label = R.string.state_streaming; break;
-            case ERROR: label = R.string.state_error; break;
-            case PERMISSION_NEEDED: label = R.string.state_permission_needed; break;
-            default: label = R.string.state_stopped;
-        }
+        int label = stateLabel(state, hasMicrophonePermission());
         statusView.setText(getString(R.string.state_format, getString(label)));
+    }
+
+    /** Label for a service state; without microphone permission the
+     * permission-needed label always wins. */
+    static int stateLabel(RecordService.State state, boolean microphoneGranted) {
+        if (!microphoneGranted) return R.string.state_permission_needed;
+        switch (state) {
+            case WAITING: return R.string.state_waiting;
+            case STREAMING: return R.string.state_streaming;
+            case ERROR: return R.string.state_error;
+            case PERMISSION_NEEDED: return R.string.state_permission_needed;
+            default: return R.string.state_stopped;
+        }
     }
 
     private void openDeveloperOptions() {

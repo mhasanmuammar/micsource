@@ -37,8 +37,7 @@ public class RecordService extends Service {
 
     private Thread recorderThread;
     private final LocalBinder binder = new LocalBinder();
-    private volatile State state = State.STOPPED;
-    private volatile StateListener stateListener;
+    private final StateStore store = new StateStore();
 
     public enum State { STOPPED, PERMISSION_NEEDED, WAITING, STREAMING, ERROR }
 
@@ -48,17 +47,14 @@ public class RecordService extends Service {
         RecordService getService() { return RecordService.this; }
     }
 
-    public State getState() { return state; }
+    public State getState() { return store.get(); }
 
     public void setStateListener(StateListener listener) {
-        stateListener = listener;
-        if (listener != null) listener.onStateChanged(state);
+        store.setListener(listener);
     }
 
     void publishState(State next) {
-        state = next;
-        StateListener listener = stateListener;
-        if (listener != null) listener.onStateChanged(next);
+        store.publish(next);
     }
 
     void stopAfterFailure() {
