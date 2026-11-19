@@ -2,9 +2,9 @@
 
 > **Audit (2026-11-19):** Tasks 1–6 are marked complete based on the shipped
 > assets, current installer/docs, and implementation commits in repository
-> history. Task 7 remains unconfirmed: its live-home install, deployed-file
-> drift checks, and service/audio post-checks have not been evidenced in this
-> checkout. The sandbox's AF_UNIX bind restriction was handled by using a
+> history. Task 7 is partially complete: its live-home install and deployed
+> file checks are now evidenced, while static lint and the service pre/post
+> comparison remain unconfirmed. The sandbox's AF_UNIX bind restriction was handled by using a
 > regular marker file for the uninstall-path assertion; the full suite now
 > passes 20/20 cases. Follow-up cycles implemented `--no-device` and pinned
 > platform-tools checksum verification, APK signature verification before
@@ -12,14 +12,15 @@
 > lint/syntax checks and live-home checks remain unconfirmed.
 
 > **Task 7 progress (2026-11-19):** the sandbox suite passed 20/20, the tray
-> model passed 5/5, Python asset compilation and Bash syntax checks passed,
-> and deployed `micsource-app.py` / `micsource-tray.py` match the repository
-> assets. `shellcheck` and `shfmt` are unavailable in this environment (the
-> plan's `/tmp/opencode/bin` tool directory is absent). The user-session bus
-> is inaccessible (`systemctl --user` reports local transport permission
-> denied), so live service-state assertions and the installer rerun that
-> restarts PipeWire were not performed. These remain unconfirmed; do not mark
-> Task 7 complete on the strength of the partial checks.
+> model passed 5/5, Python asset compilation, Bash syntax, and Node syntax
+> checks passed, and deployed app/tray files match the repository assets. A
+> real-HOME install with adb stubbed completed successfully without device
+> traffic; `adb.path` was restored byte-identically. Post-run, the service was
+> active and MicSource reported `audio_seconds=3153`. The pre-run service
+> state was not captured, so that comparison remains unconfirmed.
+> `shellcheck` and `shfmt` are unavailable here (the plan's
+> `/tmp/opencode/bin` directory is absent). Do not mark Task 7 complete until
+> the missing lint checks and baseline comparison are resolved.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
@@ -420,7 +421,8 @@ diff linux-install/assets/micsource-tray.py ~/.local/share/micsource/micsource-t
 ```
 Empty → proceed. Non-empty → **re-seed** (copy deployed → assets), re-run Step 1, re-diff; if it drifts again, stop and report (do not chase).
 
-- [ ] **Step 3: Real-HOME run with stubbed adb (no device traffic)**
+- [x] **Step 3: Real-HOME run with stubbed adb (no device traffic)** — completed
+  on 2026-11-19; installer exited 0 and made no device connection.
 
 ```bash
 mkdir -p /tmp/opencode/realrun-stub
@@ -430,7 +432,11 @@ PATH="/tmp/opencode/realrun-stub:$PATH" bash linux-install/install.sh </dev/null
 ```
 Notes: only `adb` is stubbed here (systemctl/gnome-extensions must be real for a real install); `</dev/null` makes any unexpected prompt take the default `N` answer; `step_pipewire` restarts `pipewire-pulse` — expected brief audio blip (documented in the spec).
 
-- [ ] **Step 4: Post-run assertions**
+- [ ] **Step 4: Post-run assertions** (partial: adb.path restored byte-identically;
+  deployed app/tray match assets; both historical shell fixes are installed;
+  shell syntax passes; post-run service and audio status are healthy. The
+  pre-run service state was not captured, so the required state comparison
+  remains unconfirmed.)
 
 ```bash
 printf '%s\n' "$ADB_BEFORE" > /tmp/opencode/adb.before && printf '%s\n' "$(cat ~/.local/share/micsource/adb.path)" > /tmp/opencode/adb.after
