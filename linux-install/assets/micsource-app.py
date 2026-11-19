@@ -84,10 +84,13 @@ def _log(msg):
 
 def _load_config():
     global ADB_CMD, ADB_SERVER_PORT, SERIAL, HOST_SOCKET
+    global ANDROID_PKG, DEVICE_SOCKET
     adb_path = ""
     server_port = str(DEFAULT_SERVER_PORT)
     serial = ""
     host_socket = ""
+    android_pkg = ANDROID_PKG
+    device_socket = DEVICE_SOCKET
     parser = configparser.ConfigParser()
     try:
         parser.read(CONFIG_PATH)
@@ -95,6 +98,8 @@ def _load_config():
         server_port = parser.get("adb", "server_port", fallback=server_port).strip()
         serial = parser.get("device", "serial", fallback="").strip()
         host_socket = parser.get("socket", "host_socket_name", fallback="").strip()
+        android_pkg = parser.get("android", "package", fallback=android_pkg).strip()
+        device_socket = parser.get("android", "device_socket", fallback=device_socket).strip()
     except Exception:
         pass
     if not adb_path:
@@ -111,6 +116,8 @@ def _load_config():
         _log(f"invalid [adb] server_port ({exc}); using {DEFAULT_SERVER_PORT}")
     SERIAL = serial or None
     HOST_SOCKET = host_socket or DEFAULT_HOST_SOCKET
+    ANDROID_PKG = android_pkg
+    DEVICE_SOCKET = device_socket
 
 
 def _cfg_bool(section, key, default):
@@ -273,15 +280,23 @@ class MicSourceApp(Adw.Application):
         menu_btn.set_menu_model(menu_model)
         header.pack_end(menu_btn)
 
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        content.set_margin_top(12)
-        content.set_margin_bottom(12)
-        content.set_margin_start(12)
-        content.set_margin_end(12)
+        self.stack = Adw.ViewStack()
+        self.stack.set_transition_type(Adw.ViewStackTransitionType.SLIDE_LEFT_RIGHT)
+        self.stack.set_transition_duration(250)
+        switcher = Adw.ViewStackSwitcher()
+        switcher.set_stack(self.stack)
+        header.pack_start(switcher)
+
+        # ---- basic page: status, service controls, wireless debugging ----
+        basic = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        basic.set_margin_top(12)
+        basic.set_margin_bottom(12)
+        basic.set_margin_start(12)
+        basic.set_margin_end(12)
 
         # ---- status group (Settings-style property rows) -----------------
         status_group = Adw.PreferencesGroup(title="Status")
-        content.append(status_group)
+        basic.append(status_group)
 
         self.row_device = Adw.ActionRow(title="Device", subtitle="checking…")
         self.row_device.add_css_class("property")
@@ -316,65 +331,75 @@ class MicSourceApp(Adw.Application):
         self.btn_service_stop.connect("clicked", self.on_service_stop)
         svc_box.append(self.btn_service_start)
         svc_box.append(self.btn_service_stop)
-        content.append(svc_box)
+        basic.append(svc_box)
 
-        # ---- device utilities (boxed list with flat row buttons) ---------
-        util_group = Adw.PreferencesGroup(title="Device & Wireless debugging")
+        # ---- wireless debugging (stays on main page) ----
+        wireless_group = Adw.PreferencesGroup(title="Device & Wireless debugging")
         self.device_dropdown = Gtk.DropDown.new_from_strings(
             ["Refresh to list connected devices"])
         device_row = Adw.ActionRow(
             title="Connected devices",
             subtitle="USB and already connected Wi-Fi devices")
         device_row.add_suffix(self.device_dropdown)
-        util_group.add(device_row)
+        wireless_group.add(device_row)
         self._action_row_button(
-            util_group, "Refresh devices", "List authorized, offline, and unauthorized devices",
+            wireless_group, "Refresh devices", "List authorized, offline, and unauthorized devices",
             "Refresh", self.on_refresh_devices)
         self._action_row_button(
-            util_group, "Use selected device", "MicSource stores the selected ADB serial",
+            wireless_group, "Use selected device", "MicSource stores the selected ADB serial",
             "Select", self.on_select_device)
         self.entry_pair_address = Gtk.Entry(placeholder_text="Phone pairing address, e.g. 192.168.1.20:41000")
         self.entry_pair_address.set_hexpand(True)
         pair_address_row = Adw.ActionRow(title="Pairing address")
         pair_address_row.add_suffix(self.entry_pair_address)
-        util_group.add(pair_address_row)
+        wireless_group.add(pair_address_row)
         self.entry_pair_code = Gtk.Entry(placeholder_text="Six-digit temporary code")
         self.entry_pair_code.set_visibility(False)
         self.entry_pair_code.set_input_purpose(Gtk.InputPurpose.DIGITS)
         self.entry_pair_code.set_max_length(6)
         code_row = Adw.ActionRow(title="Pairing code")
         code_row.add_suffix(self.entry_pair_code)
-        util_group.add(code_row)
+        wireless_group.add(code_row)
         self._action_row_button(
-            util_group, "Pair phone", "Use the pairing port and temporary code shown by Android",
+            wireless_group, "Pair phone", "Use the pairing port and temporary code shown by Android",
             "Pair", self.on_wireless_pair)
         self.entry_connect_address = Gtk.Entry(placeholder_text="Separate wireless connection address, e.g. 192.168.1.20:38000")
         self.entry_connect_address.set_hexpand(True)
         connect_address_row = Adw.ActionRow(title="Connection address")
         connect_address_row.add_suffix(self.entry_connect_address)
-        util_group.add(connect_address_row)
+        wireless_group.add(connect_address_row)
         self._action_row_button(
-            util_group, "Connect phone", "Connect and create MicSource's audio socket forward",
+            wireless_group, "Connect phone", "Connect and create MicSource's audio socket forward",
             "Connect", self.on_wireless_connect)
         self._action_row_button(
-            util_group, "Find Wi-Fi devices", "Optional ADB mDNS discovery; manual address entry also works",
+            wireless_group, "Find Wi-Fi devices", "Optional ADB mDNS discovery; manual address entry also works",
             "Discover", self.on_wireless_discover)
         self._action_row_button(
-            util_group, "Disconnect Wi-Fi device", "Disconnect the entered address",
+            wireless_group, "Disconnect Wi-Fi device", "Disconnect the entered address",
             "Disconnect", self.on_wireless_disconnect)
+        basic.append(wireless_group)
+
+        # ---- advanced page: install/build/config + activity log ----
+        advanced = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        advanced.set_margin_top(12)
+        advanced.set_margin_bottom(12)
+        advanced.set_margin_start(12)
+        advanced.set_margin_end(12)
+
+        advanced_group = Adw.PreferencesGroup(title="Advanced")
         self._action_row_button(
-            util_group, "Install APK on the Phone",
+            advanced_group, "Install APK on the Phone",
             "Installs the staged APK and restores the socket forward",
             "Install", self.on_install_apk)
         self._action_row_button(
-            util_group, "Build APK from Source",
+            advanced_group, "Build APK from Source",
             "Compiles the project checkout (first run is slow)",
             "Build", self.on_build_apk)
         self._action_row_button(
-            util_group, "Open Config Folder", "", "Open", self.on_open_config)
-        content.append(util_group)
+            advanced_group, "Open Config Folder", "", "Open", self.on_open_config)
+        advanced.append(advanced_group)
 
-        # ---- activity log --------------------------------------------------
+        # activity log
         self.log_view = Gtk.TextView()
         self.log_view.set_editable(False)
         self.log_view.set_cursor_visible(False)
@@ -386,15 +411,19 @@ class MicSourceApp(Adw.Application):
         scroll.set_size_request(-1, 110)
         scroll.set_child(self.log_view)
 
-        content.append(Gtk.Label(label="Activity log", xalign=0,
-                                 halign=Gtk.Align.START))
-        content.append(Gtk.Frame(child=scroll))
+        advanced.append(Gtk.Label(label="Activity log", xalign=0,
+                                  halign=Gtk.Align.START))
+        advanced.append(Gtk.Frame(child=scroll))
+
+        self.stack.add_titled(basic, "basic", "Basic")
+        self.stack.add_titled(advanced, "advanced", "Advanced")
+        self.stack.set_visible_child_name("basic")
 
         # Adaptive page: clamped width (HIG single-column layout like
         # gnome-settings) inside a vertical scroll, so the window works
         # at any height instead of overflowing a fixed size.
         clamp = Adw.Clamp(maximum_size=600, tightening_threshold=500)
-        clamp.set_child(content)
+        clamp.set_child(self.stack)
         page_scroll = Gtk.ScrolledWindow()
         page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         page_scroll.set_child(clamp)
