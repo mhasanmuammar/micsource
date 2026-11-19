@@ -1,6 +1,6 @@
 # Android MicSource Branding, Wireless Debugging, and Phone GUI Plan
 
-**Status:** Task 1 implemented; Tasks 2–5 proposed.
+**Status:** Tasks 1–2 implemented; Tasks 3–5 proposed.
 
 > **Progress (2026-11-19):** Task 1 now routes all MicSource ADB clients through
 > port 5038 by default, stops publishing the bundle as bare `adb`, migrates
@@ -8,6 +8,13 @@
 > unit tests and the 24-case installer suite pass. A live two-server
 > coexistence smoke test remains in Task 5, where it can run in a controlled
 > environment without competing with the user's active phone connection.
+>
+> **Progress (2026-11-19):** Task 2 now brands the launcher, notification
+> channel, log tag, adaptive icon, and legacy density icons as MicSource while
+> preserving `fr.dzx.audiosource`. `assembleDebug` succeeds; APK inspection
+> confirms the package, MicSource label, launcher resources, declared
+> permissions, and component export settings. Installing over an existing
+> phone build with the expected signing key remains a Task 5 device check.
 
 ## Goal
 
