@@ -7,9 +7,9 @@
 > checkout. The sandbox's AF_UNIX bind restriction was handled by using a
 > regular marker file for the uninstall-path assertion; the full suite now
 > passes 20/20 cases. Follow-up cycles implemented `--no-device` and pinned
-> platform-tools checksum verification, and APK signature verification before
-> device install. Task 7's broader lint/syntax checks and live-home checks
-> remain unconfirmed.
+> platform-tools checksum verification, APK signature verification before
+> device install, and a Gio StatusNotifierItem tray. Task 7's broader
+> lint/syntax checks and live-home checks remain unconfirmed.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 

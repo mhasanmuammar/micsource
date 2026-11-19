@@ -671,22 +671,11 @@ AUTOEOF
     else
         info "Tray is opt-in: enable it from the control window's Preferences."
     fi
-    # Probe the same bindings the tray script tries: the classic
-    # AppIndicator3 first, then the maintained ayatana fork (see
-    # micsource-tray.py).
-    if ! python3 -c 'import gi
-gi.require_version("Gtk", "3.0")
-try:
-    gi.require_version("AppIndicator3", "0.1")
-    from gi.repository import AppIndicator3  # noqa: F401
-except (ImportError, ValueError):
-    gi.require_version("AyatanaAppIndicator3", "0.1")
-    from gi.repository import AyatanaAppIndicator3  # noqa: F401' >/dev/null 2>&1; then
-        warn "The GTK/AppIndicator Python bindings are not installed; the tray"
-        info "will log the reason to ${DATA_DIR}/tray.log and exit instead of"
-        info "starting. Install them, e.g."
-        info "  sudo apt install gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1"
-        info "On GNOME (without appindicator), use the quick settings pill instead."
+    # Gio/GLib are the tray's only bindings; Gtk/AppIndicator are not needed.
+    if ! python3 -c 'from gi.repository import Gio, GLib' >/dev/null 2>&1; then
+        warn "PyGObject GLib/Gio bindings are not available; the tray cannot start."
+        info "Install Python 3 PyGObject (often packaged as python3-gi)."
+        info "A StatusNotifier watcher must also be running in the desktop session."
     fi
 }
 

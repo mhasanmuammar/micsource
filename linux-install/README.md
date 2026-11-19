@@ -27,7 +27,7 @@ The installer forwards the device socket to the host, mapping
 | **Control window** | `~/.local/share/micsource/micsource-app.py` | Desktop GUI (GTK 4 + libadwaita): status, service control, install APK, build APK, header menu (Preferences / About), notifications |
 | **Stream routing lock** | `~/.config/pipewire/pipewire-pulse.conf.d/10-micsource-stream-lock.conf` | Keeps the virtual-mic player stream locked to the virtual sink (PipeWire/WirePlumber cannot re-route it) |
 | **GUI wrapper** | `~/.local/share/micsource/micsource-gui` | Launcher target; shows a helpful notification if the GTK 4 / libadwaita stack is missing |
-| **Tray icon script** | `~/.local/share/micsource/micsource-tray.py` | Opt-in legacy tray (GTK 3 + AppIndicator/Ayatana) for KDE/XFCE/etc.; enable from the app's Preferences or `./install.sh --with-tray`. On GNOME use the top-bar tile |
+| **Tray icon script** | `~/.local/share/micsource/micsource-tray.py` | Opt-in StatusNotifierItem tray for KDE/XFCE and other StatusNotifier desktops; enable from Preferences or `./install.sh --with-tray`. On GNOME use the top-bar tile or its AppIndicator extension |
 | **systemd service** | `~/.config/systemd/user/micsource.service` | Background monitoring, socket forwarding, audio playback |
 | **CLI** | `~/.local/bin/micsource` → `~/.local/share/micsource/micsource` | Command-line client (start/stop/status/run/tray/window/build-apk/install-apk/config) |
 | **Config** | `~/.config/micsource/config.ini` | Editable host configuration |
@@ -36,7 +36,7 @@ The installer forwards the device socket to the host, mapping
 ## Requirements
 
 - Linux desktop (GNOME tested; works on most XDG desktops)
-- Python 3 with PyGObject (`gi.repository.Gtk`) for the control window and tray. The tray icon additionally needs Gtk 3 + `AppIndicator3`/`AyatanaAppIndicator3` (`gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`); without them it logs the reason to `tray.log` and exits instead of opening a second window — use the control window or the GNOME tile there.
+- Python 3 with PyGObject (`gi.repository.Gtk`) for the control window. The tray uses PyGObject's Gio/GLib bindings and the desktop session's StatusNotifier watcher; it does not need Gtk 3 or AppIndicator client packages. GNOME needs a StatusNotifier/AppIndicator shell extension to display the tray icon; the MicSource top-bar tile is available without it.
 - `paplay` (preferred) or `aplay` for audio playback
 - `pactl` (PulseAudio/PipeWire, installed by default on desktop Linux) for the virtual microphone
 - `adb` — detected automatically; if absent you will be prompted to install the official adb bundle (downloaded to `~/.local/share/micsource/adb-bundle/` and linked as `~/.local/bin/adb`)
@@ -124,10 +124,10 @@ conflicts).
 
 **Tray icon** (optional; `micsource tray`): shows connected/disconnected
 state, offers Start / Stop Service, Open Control Window, Open Config
-Folder, and Quit. It needs Gtk 3 + AppIndicator3/Ayatana; without those
-bindings it writes the error to `~/.local/share/micsource/tray.log` and exits
-rather than opening a second window. On GNOME without the appindicator
-extension, use the GNOME tile instead (see below).
+Folder, and Quit. It uses PyGObject Gio/GLib and requires a StatusNotifier
+watcher in the session. If there is no watcher, it logs the reason to
+`~/.local/share/micsource/tray.log` and exits. GNOME needs its AppIndicator
+extension to display the icon; use the GNOME tile if that extension is absent.
 
 **Background monitor:** the systemd service sends desktop notifications when
 the device connects or disconnects.

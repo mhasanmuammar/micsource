@@ -11,6 +11,11 @@
 > of this plan describes shipped behavior**. The installer work it referenced
 > became asset seeding instead — see
 > `../specs/2026-11-07-installer-assets-design.md`.
+>
+> **Later follow-up (2026-11-19):** StatusNotifierItem support was implemented
+> again from the repository assets using `Gio.bus_get_sync()` and
+> `Gio.DBusConnection.register_object()`. This is a separate implementation;
+> do not resume this plan's steps or its broken `own_name` approach.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -195,11 +195,9 @@ download. Scratch dirs are `mktemp -d` under the data dir, tracked in
    **opt-in**: without flags there is no autostart entry; `--with-tray`
    installs the XDG autostart entry at
    `~/.config/autostart/micsource-tray.desktop` (the control window's
-   Preferences toggle can do the same later). In both cases the step probes
-   the same bindings the tray imports (`Gtk 3.0` plus AppIndicator3 or
-   AyatanaAppIndicator3 0.1) and, when they are missing, warns with the exact
-   package names (`gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`) and
-   points at the Preferences toggle / GNOME tile.
+   Preferences toggle can do the same later). It probes only PyGObject Gio/GLib
+   imports and warns if those bindings are missing. At runtime, the tray also
+   requires a session-bus `org.kde.StatusNotifierWatcher` owner.
 10. `step_systemd` — writes the systemd user unit `micsource.service`
     (WantedBy=graphical-session.target, Restart=on-failure); the monitor
     payload was copied in step 1. Tries `systemctl --user daemon-reload`.
@@ -385,8 +383,7 @@ from the tray menu's "Open Control Window".
   with the reason appended to the subtitle (HIG).
 - About: `Adw.AboutDialog` (libadwaita >= 1.2) with a MessageDialog
   fallback. Status rows use the `property` style class (HIG property
-  rows). The tray stays Gtk 3: the AppIndicator and
-  AyatanaAppIndicator client bindings are Gtk 3 only.
+  rows). The tray uses Gio directly and does not import Gtk 3.
 - `Gtk.Application` (`application_id=local.micsource`), one `ApplicationWindow`.
 - Status block refreshed every 3 s in a background thread: device online +
   forward state (adb), systemd unit state, and the monitor's control-socket
@@ -460,45 +457,32 @@ from the tray menu's "Open Control Window".
 
 - Installed from `linux-install/assets/micsource-tray.py`: the repo asset is
   the source of truth, the data-dir copy is an output.
-- Python 3, PyGObject: imports **Gtk 3.0**, then `AppIndicator3` 0.1, falling
-  back to `AyatanaAppIndicator3` 0.1 aliased to `AppIndicator3` (identical
-  API). Gtk 3 is required because the AppIndicator/Ayatana client bindings are
-  Gtk 3 only.
-- If `AppIndicator3` (or PyGObject) cannot be imported, the tray **logs the
-  missing-binding error to `~/.local/share/micsource/tray.log` and exits
-  1**. It used to `os.execvp` into `micsource-app.py` "as a fallback" —
-  that literally spawned an extra control window on every tray toggle
-  (user report), so an explicit tray launch must never silently become a
-  different program. The app's toggle now preflights the bindings instead
-  (see below).
-- Icon: `micsource` (installed SVG) with fallback `audio-input-microphone`.
-- Tray script stays on Gtk 3 and tries `AppIndicator3` first, falling back
-  to `AyatanaAppIndicator3` aliased as `AppIndicator3` (identical API).
-  The tray is **opt-in**: `install.sh --with-tray` only writes the XDG
-  autostart entry at `~/.config/autostart/micsource-tray.desktop`. The
-  binding probe in `step_tray` runs in **both** modes: it tries the same
-  Gtk 3 + AppIndicator/Ayatana imports as the tray script and, on failure,
-  only prints a warning (no offer, no prompt, nothing installed).
-  Otherwise the control window's Preferences toggle (Startup & Panel →
-  Tray Icon)
-  - prefights the bindings in a **subprocess** (`_tray_bindings_ok()` —
-    `Gtk 3.0` + AppIndicator/Ayatana import; Gtk 3 is never imported into
-    the app's own Gtk 4 process) and fails with the exact packages
-    (`gir1.2-gtk-3.0` + `gir1.2-ayatanaappindicator3-0.1`) when missing,
-  - adds a `_tray_display_hint()` warning when the desktop is GNOME
-    without the `appindicatorsupport@rgcjonas.gmail.com` extension
-    (GNOME has no native StatusNotifier area — without that extension
-    the icon is invisible even when the tray process runs fine),
-  - then writes/removes the autostart entry and spawns/kills
-    `micsource tray`.
+- Uses PyGObject Gio/GLib to export `org.kde.StatusNotifierItem` at
+  `/StatusNotifierItem` and `com.canonical.dbusmenu` at
+  `/StatusNotifierItem/menus/micsource`; it has no Gtk 3/AppIndicator client
+  dependency. The item registers its unique session-bus name with
+  `org.kde.StatusNotifierWatcher`. If no watcher owns that name, it logs to
+  `~/.local/share/micsource/tray.log` and exits 1.
+- Watches `NameOwnerChanged` and registers again when the watcher restarts.
+  Menu layout and SNI property models are pure Python functions covered by
+  `linux-install/tests/test_tray_model.py`; D-Bus callbacks serve GetLayout,
+  GetGroupProperties, GetProperty, Event, EventGroup and AboutToShow methods.
+- Icon: `micsource` (installed SVG) with fallback `audio-input-microphone`;
+  the tooltip also carries status text.
+- The tray is **opt-in**: `install.sh --with-tray` writes the XDG autostart
+  entry at `~/.config/autostart/micsource-tray.desktop`. The Preferences
+  toggle probes for a live StatusNotifier watcher in a subprocess through
+  `_tray_watcher_ok()` before enabling it; GNOME needs its AppIndicator shell
+  extension for a watcher/display area. The tray never falls back by opening
+  a second control window.
 - Menu: Status (read-only), Start Service, Stop Service (both spawn
   `[CLI_PATH, "start"|"stop"]` — `CLI_PATH` = the data-dir CLI, so the CLI's
   systemd/no-systemd logic is reused), Open Control Window (spawns
   `micsource-app.py`), Open Config Folder (plain `xdg-open`), Quit.
   Quitting the tray does not stop the service.
 - Status polling runs in a **background thread** (subprocess adb calls are
-  never made on the Gtk main thread); results are applied on the Gtk main
-  thread via `GLib.idle_add`. The icon shows connected/disconnected only.
+  never made on the GLib main loop); results are applied via `GLib.idle_add`.
+  The icon and menu show connected/disconnected state.
 - The tray has **no audio pump** — no `_vmic_*`, `_pump` or `paplay` code at
   all; monitoring is the background service's job.
 - Reads `adb_path` / `serial` / `host_socket_name` from `config.ini`; falls
@@ -689,20 +673,11 @@ replacement leaves the previous recording pipeline wedged).
 - `~/.local/bin` is commonly on PATH (most distro default `.profile`); the
   installer detects and warns when it is not, and users may need
   `export PATH="$HOME/.local/bin:$PATH"`.
-- Tested on GNOME (X11/Wayland). The tray uses `Gtk 3.0` +
-  `AppIndicator3`/`AyatanaAppIndicator3`, which works on GNOME with
-  AppIndicator support and most other XDG desktops. Two distinct failure
-  modes:
-  - **Missing Python bindings** (PyGObject/`Gtk 3.0` or the
-    AppIndicator/Ayatana client): the tray does not run at all — the import
-    error is logged to `tray.log` and an explicit tray launch exits 1 rather
-    than opening a second window.
-  - **Bindings present but GNOME lacks the AppIndicator Shell extension**
-    (`appindicatorsupport@rgcjonas.gmail.com`): the tray process runs fine
-    and logs nothing, but GNOME ships no native tray area, so the icon is
-    invisible.
-  The micsource-tile GNOME extension is the top-bar alternative in both
-  cases (ES-module, GNOME Shell 47+).
+- Tray support uses the standard StatusNotifierItem/dbusmenu protocols and
+  requires `PyGObject` Gio/GLib plus a session-bus watcher. GNOME has no
+  built-in StatusNotifier area and needs its AppIndicator extension; the
+  MicSource GNOME tile is the alternative. The micsource-tile extension is an
+  ES module for GNOME Shell 47+.
 - `systemctl --user` is required for the background service; without it the
   unit file is still installed but not activated.
 - `paplay` required for audio; without it the install succeeds but playback
@@ -848,8 +823,6 @@ The following defects were present in the previous version and are fixed:
   establish that a signer is MicSource's trusted publisher.
 
 ## Suggested improvements
-
-- Support non-GNOME desktops via `StatusNotifierItem` (KDE/Pantheon).
 
 - PipeWire >= 1.6 stream policy: the installer writes
   `~/.config/pipewire/pipewire-pulse.conf.d/10-micsource-stream-lock.conf`

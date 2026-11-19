@@ -21,14 +21,14 @@ instant-apply switches per the GNOME HIG:
 
   * Auto-start service at login        (systemd user unit enable/disable)
   * GNOME top-bar tile                 (gnome-extensions enable/disable)
-  * Tray icon (AppIndicator, opt-in)   (XDG autostart entry + spawn/kill —
-    legacy tray for KDE/XFCE/etc.; GNOME users should use the tile)
+  * Tray icon (StatusNotifier, opt-in) (XDG autostart entry + spawn/kill —
+    works on StatusNotifier-capable desktops; GNOME users may use the tile)
   * Virtual microphone / play to       (~/.config/micsource/config.ini;
     speakers                            applied on next service start)
 
 Also sends desktop notifications on state changes (device link, install
-results, service state). The tray icon stays on Gtk 3 because the
-AppIndicator/Ayatana client bindings are Gtk 3 only.
+results, service state). The tray exports StatusNotifierItem and dbusmenu
+through Gio, without Gtk 3 or AppIndicator client bindings.
 """
 import configparser
 import os
@@ -609,11 +609,11 @@ class MicSourceApp(Adw.Application):
                                       "on this system")
         grp.add(tile_row)
 
-        # Opt-in AppIndicator tray (KDE/XFCE/etc.; GNOME users use the tile).
+        # Opt-in StatusNotifier tray (KDE/XFCE/etc.; GNOME users may use tile).
         tray_ok = os.path.isfile(TRAY_PATH)
         tray_row, tray_watch, tray_get, tray_set = _make_switch_row(
-            "Tray Icon (AppIndicator)",
-            "Legacy tray icon for KDE/XFCE/other desktops")
+            "Tray Icon (StatusNotifier)",
+            "Status icon for StatusNotifier-capable desktops")
         self._wire_toggle(tray_row, tray_watch, tray_get, tray_set,
                           self._get_tray, self._apply_tray,
                           sensitive=tray_ok,
@@ -812,22 +812,19 @@ class MicSourceApp(Adw.Application):
         return False, ("gnome-shell did not confirm the tile is "
                        + ("on" if on else "off") + " within ~3 s")
 
-    # -- tray helpers (probe in a separate process; Gtk 3 must never be
-    # imported into this Gtk 4 process) -----------------------------------
+    # -- tray helpers (probe the session-bus watcher in a subprocess) -----
     TRAY_PROBE = (
-        "import gi\n"
-        "gi.require_version('Gtk', '3.0')\n"
-        "from gi.repository import Gtk  # noqa\n"
-        "try:\n"
-        "    gi.require_version('AppIndicator3', '0.1')\n"
-        "    from gi.repository import AppIndicator3  # noqa\n"
-        "except (ImportError, ValueError):\n"
-        "    gi.require_version('AyatanaAppIndicator3', '0.1')\n"
-        "    from gi.repository import AyatanaAppIndicator3  # noqa\n")
+        "from gi.repository import Gio, GLib\n"
+        "bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)\n"
+        "answer = bus.call_sync(\n"
+        "    'org.freedesktop.DBus', '/org/freedesktop/DBus',\n"
+        "    'org.freedesktop.DBus', 'NameHasOwner',\n"
+        "    GLib.Variant('(s)', ('org.kde.StatusNotifierWatcher',)),\n"
+        "    None, Gio.DBusCallFlags.NONE, 3000, None)\n"
+        "raise SystemExit(0 if answer.unpack()[0] else 3)\n")
 
-    def _tray_bindings_ok(self):
-        """Gtk 3 + an AppIndicator client binding importable? Probed in a
-        subprocess."""
+    def _tray_watcher_ok(self):
+        """Is a StatusNotifier host available on the session bus?"""
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", self.TRAY_PROBE],
@@ -836,46 +833,22 @@ class MicSourceApp(Adw.Application):
         except Exception:
             return False
 
-    def _tray_display_hint(self):
-        """Warning for desktops needing extra bits to *render* the icon
-        (GNOME has no native StatusNotifier area — the KStatusNotifier /
-        AppIndicator shell extension is required)."""
-        if "GNOME" not in os.environ.get("XDG_CURRENT_DESKTOP", ""):
-            return ""
-        candidates = (
-            os.path.expanduser("~/.local/share/gnome-shell/extensions/"
-                               "appindicatorsupport@rgcjonas.gmail.com"),
-            "/usr/share/gnome-shell/extensions/"
-            "appindicatorsupport@rgcjonas.gmail.com")
-        for path in candidates:
-            if os.path.isdir(path):
-                return ""
-        return ("on GNOME the icon also needs the KStatusNotifier/"
-                "AppIndicator shell extension")
-
     def _get_tray(self):
         return os.path.isfile(TRAY_DESKTOP)
 
     def _apply_tray(self, on):
         if on:
-            # Preflight: with the bindings missing, the tray script cannot
-            # start at all — previously that failure was invisible (the
-            # spawn rc still read as success, no icon appeared, and the
-            # script's own legacy fallback even opened a second control
-            # window). Fail here with the exact packages instead.
-            if not self._tray_bindings_ok():
+            if not self._tray_watcher_ok():
                 return False, (
-                    "AppIndicator bindings missing — install "
-                    "gir1.2-gtk-3.0 and gir1.2-ayatanaappindicator3-0.1 "
-                    "(or re-run install.sh; it prints the exact packages)")
-            hint = self._tray_display_hint()
+                    "no tray support on this desktop — no StatusNotifier "
+                    "watcher on the session bus (GNOME needs the "
+                    "appindicatorsupport shell extension)")
             os.makedirs(os.path.dirname(TRAY_DESKTOP), exist_ok=True)
             desktop = (
                 "[Desktop Entry]\n"
                 "Type=Application\n"
                 "Name=MicSource Tray\n"
-                "Comment=MicSource status icon (opens the control window "
-                "when no tray is available)\n"
+                "Comment=MicSource status and controls\n"
                 f"Exec={CLI_PATH} tray\n"
                 f"TryExec={CLI_PATH}\n"
                 "Icon=micsource\n"
@@ -892,8 +865,7 @@ class MicSourceApp(Adw.Application):
                                  start_new_session=True)
             except Exception as exc:  # noqa: BLE001
                 return False, f"cannot start tray: {exc}"
-            return True, ("tray icon enabled (autostart entry written)"
-                          + (f" — {hint}" if hint else ""))
+            return True, "tray icon enabled (autostart entry written)"
         try:
             os.remove(TRAY_DESKTOP)
         except FileNotFoundError:
