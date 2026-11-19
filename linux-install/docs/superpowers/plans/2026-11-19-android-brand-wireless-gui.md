@@ -2,6 +2,13 @@
 
 **Status:** Tasks 1–4 implemented; Task 5 remains.
 
+**Next agent:** Finish Task 5. Update `docs/USER.md`, `docs/AGENT.md`, and
+`README.md` for MicSource branding, phone controls, USB/Wi-Fi pairing, and
+device selection. Then validate the APK and USB/Wi-Fi reconnect flow on a
+phone, and test ADB server coexistence only in a controlled no-device setup.
+Record any unavailable checks as unfinished; do not debug the dormant tray
+menu issue.
+
 > **Progress (2026-11-19):** Task 1 now routes all MicSource ADB clients through
 > port 5038 by default, stops publishing the bundle as bare `adb`, migrates
 > only MicSource-owned links, and preserves foreign links. Four ADB-routing
