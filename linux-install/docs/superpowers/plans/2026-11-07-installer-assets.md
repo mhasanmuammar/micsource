@@ -1,6 +1,15 @@
 # Installer Assets Refactor Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Audit (2026-11-19):** Tasks 1–6 are marked complete based on the shipped
+> assets, current installer/docs, and implementation commits in repository
+> history. Task 7 remains unconfirmed: its live-home install, deployed-file
+> drift checks, and service/audio post-checks have not been evidenced in this
+> checkout. A 2026-11-19 sandbox-suite attempt stopped in case 3 because the
+> fixture's Unix socket bind raised `PermissionError`, before the new case
+> could run. Do not infer completion from the sandbox suite. The next follow-up
+> is `--no-device` support (implemented in the 2026-11-19 development cycle).
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Turn `linux-install/` into a lint-clean, asset-based installer: payloads live as real files under `linux-install/assets/` (the source of truth), both scripts share `common.sh`, the two audited bugs are fixed, and install/uninstall report honest results with honest exit codes.
 
@@ -48,18 +57,18 @@ Failure modes the spec implies but no single task's happy path exercises — eac
 - Consumes: heredoc payloads inside `install.sh`; deployed files `~/.local/share/micsource/{micsource-app.py,micsource-tray.py}` and `~/.local/share/gnome-shell/extensions/micsource-tile@micsource.local/*`.
 - Produces: the nine asset files at the exact paths above; `TRAY` in `test_tray_model.py` = `os.path.join(REPO, "linux-install/assets/micsource-tray.py")` where `REPO` is resolved from `__file__` (`../../..` from the test file). Later tasks copy these files and never re-seed except per the Task 7 drift policy.
 
-- [ ] **Step 1: Extract the heredoc payloads into assets**
+- [x] **Step 1: Extract the heredoc payloads into assets**
 
 From `linux-install/install.sh`, extract the bodies between the quoted heredoc markers (delimiter lines are bare, e.g. `__CLIEOF__`) into the matching asset path: `__CLIEOF__` → `assets/micsource`, `__GUIEOF__` → `assets/micsource-gui`, `__BUILDEOF__` → `assets/micsource-build`, `__MONITOREOF__` → `assets/micsource-monitor.py`, `__EXTJSEOF__` → `assets/gnome/extension.js`, `__PREFSEOF__` → `assets/gnome/prefs.js`, `__METADATAEOF__` → `assets/gnome/metadata.json`. An `awk` one-liner works: print lines after the marker line containing `<<'…'` until the bare delimiter.
 
-- [ ] **Step 2: Copy the two deployed Python payloads**
+- [x] **Step 2: Copy the two deployed Python payloads**
 
 ```bash
 cp ~/.local/share/micsource/micsource-app.py  linux-install/assets/micsource-app.py
 cp ~/.local/share/micsource/micsource-tray.py linux-install/assets/micsource-tray.py
 ```
 
-- [ ] **Step 3: Verify byte-identity of every seed**
+- [x] **Step 3: Verify byte-identity of every seed**
 
 Run and require zero output from each `diff` (SAME):
 - `diff` each of `assets/{micsource,micsource-gui,micsource-build,micsource-monitor.py}` against `~/.local/share/micsource/<same name>`.
@@ -68,7 +77,7 @@ Run and require zero output from each `diff` (SAME):
 
 If any diff is non-empty: stop and report (do not edit either side).
 
-- [ ] **Step 4: Syntax-check the seeds**
+- [x] **Step 4: Syntax-check the seeds**
 
 ```bash
 python3 -m py_compile linux-install/assets/micsource-{app,tray,monitor}.py
@@ -80,7 +89,7 @@ done
 ```
 Expected: all exit 0, no output (py_compile leaves `__pycache__` under `assets/` — delete it: `rm -rf linux-install/assets/__pycache__`).
 
-- [ ] **Step 5: Retarget `test_tray_model.py` and run it**
+- [x] **Step 5: Retarget `test_tray_model.py` and run it**
 
 Change line 13 to resolve the repo asset from `__file__`. Run:
 ```bash
@@ -88,7 +97,7 @@ python3 linux-install/tests/test_tray_model.py
 ```
 Expected: `OK` (5 tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add linux-install/assets linux-install/tests/test_tray_model.py
@@ -108,7 +117,7 @@ git commit -m "refactor: seed linux-install/assets from heredocs and deployed so
 - Consumes: the three shell assets from Task 1.
 - Produces: `assets/micsource` defines `info() ok() warn() err() ask() confirm() have_cmd() usage()` (its own, standalone — deployed assets never source `common.sh`); `assets/micsource-build` reads `PROJECT_ROOT` from `${HOME}/.local/share/micsource/project.path` (single line, trailing newline tolerated via `tr -d '\n'`) and errors with `micsource-build: project.path missing — re-run linux-install/install.sh from the project checkout` when absent/empty; both available at `/tmp/opencode/bin/{shellcheck,shfmt}` for every later task.
 
-- [ ] **Step 1: Fetch pinned lint tools**
+- [x] **Step 1: Fetch pinned lint tools**
 
 ```bash
 mkdir -p /tmp/opencode/bin
@@ -117,7 +126,7 @@ mkdir -p /tmp/opencode/bin
 ```
 Verify `/tmp/opencode/bin/shellcheck --version` reports v0.10.0 and `/tmp/opencode/bin/shfmt --version` reports v3.8.0 (adjust arch suffix if `uname -m` is `aarch64`; if a pinned URL 404s, use the latest release and say so in the commit message).
 
-- [ ] **Step 2: Write the failing behavioral tests**
+- [x] **Step 2: Write the failing behavioral tests**
 
 In `/tmp/opencode/asset-tests/`, three cases:
 
@@ -127,19 +136,19 @@ In `/tmp/opencode/asset-tests/`, three cases:
 
 Run all three, record the failures.
 
-- [ ] **Step 3: Fix `assets/micsource` (bug 1)**
+- [x] **Step 3: Fix `assets/micsource` (bug 1)**
 
 Add `warn()` and `ask()` (and `confirm()`, used nowhere yet but completing the helper set) with the same format strings as install.sh's versions (`[WARN]`/`[?]` prefixes, colors optional — keep them uncolored to match this script's existing plain `info`/`err`).
 
-- [ ] **Step 4: Fix `assets/micsource-build` (bug 2)**
+- [x] **Step 4: Fix `assets/micsource-build` (bug 2)**
 
 Replace the hardcoded `PROJECT_ROOT="/home/hasan/…"` with: read `${HOME}/.local/share/micsource/project.path` (error as specified in Interfaces when missing/empty), then keep the existing `gradlew` existence check. Add two more test cases: (a) no `project.path` → exit 1 with the `project.path missing` message; (b) `project.path` pointing at a dir without `gradlew` → exit 1 with the existing `project moved?` message. Both must run without invoking gradle (the errors occur before `cd`/`./gradlew`).
 
-- [ ] **Step 5: Run the behavioral tests to green**
+- [x] **Step 5: Run the behavioral tests to green**
 
 Run the four cases from Steps 2 and 4. Expected: all PASS.
 
-- [ ] **Step 6: Lint and format the three shell assets**
+- [x] **Step 6: Lint and format the three shell assets**
 
 ```bash
 /tmp/opencode/bin/shellcheck linux-install/assets/{micsource,micsource-gui,micsource-build}   # zero warnings
@@ -148,7 +157,7 @@ bash -n linux-install/assets/{micsource,micsource-gui,micsource-build}
 ```
 Fix warnings with behavior-preserving edits only (quoting, redirection, word-splitting); `# shellcheck disable=SC####` solely for false positives. If a warning cannot be cleared without changing logic, stop and report.
 
-- [ ] **Step 7: Confirm Python/JS assets untouched and commit**
+- [x] **Step 7: Confirm Python/JS assets untouched and commit**
 
 ```bash
 diff linux-install/assets/micsource-app.py  ~/.local/share/micsource/micsource-app.py
@@ -175,7 +184,7 @@ Expected: both diffs empty.
   - `refuse_root` prints the existing root error and `exit 1`.
 - Produces — `tests/test_install_sandbox.sh`: runnable as `bash linux-install/tests/test_install_sandbox.sh`; prints one `PASS`/`FAIL` line per case; exits 0 iff all pass, 1 otherwise; shellcheck-clean. Provides reusable helpers: `make_sandbox` (mktemp under `/tmp/opencode/`, fake `HOME`, `stubbin/` with logging stubs — **`adb`**: logs `$*` to `$SANDBOX/stub.log`, `get-state` → prints `offline` + exit 1, any other subcommand → exit 0 (a non-`get-state` line in the log fails Task 4's assertions); **`systemctl`** and **`gnome-extensions`**: log args, exit 0), `assert_file`, `assert_gone`, `assert_contains`, `assert_exit`. Every install/uninstall invocation sets `HOME` and env (`XDG_CURRENT_DESKTOP`, `PATH`) explicitly via `env` — never inherited from the ambient session.
 
-- [ ] **Step 1: Write the failing test cases**
+- [x] **Step 1: Write the failing test cases**
 
 Sandbox-test cases for this task (uninstall runs against a **synthetic fixture** the test builds itself — no install.sh involved yet):
 
@@ -187,15 +196,15 @@ Sandbox-test cases for this task (uninstall runs against a **synthetic fixture**
 
 Run: `bash linux-install/tests/test_install_sandbox.sh` → cases 1–2 FAIL (no `--help`/exit-2 yet), 3–5 PASS (current behavior already satisfies them — verify; if case 3's current behavior differs, report before proceeding).
 
-- [ ] **Step 2: Create `common.sh`**
+- [x] **Step 2: Create `common.sh`**
 
 Implement exactly the Interfaces block. Colors: `if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then … else … fi`. Path block copied from install.sh's Configuration section (values unchanged).
 
-- [ ] **Step 3: Refactor `uninstall.sh`**
+- [x] **Step 3: Refactor `uninstall.sh`**
 
 Source `common.sh` via `SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "${SRC_DIR}/common.sh"`; delete its local color/helper/path block (keep script-specific vars: `MONITOR_PATH`, `UNIT_FILE`, `DESKTOP_FILE`, `ICON_FILE`, `CLI_TARGET`, `ADB_BUNDLE_ADB`, `SOCK`, marker list). Add arg parsing: `-h|--help` prints a `Usage: uninstall.sh [--help]` banner and exits 0; unknown → err + usage to stderr, exit 2; no args proceeds. Add `project.path` to `data_dir_is_ours` markers. Rename the `# 6. Remove GNOME extension` header to `# 6. Remove stream routing lock, autostart entry, and GNOME extension`.
 
-- [ ] **Step 4: Lint both files**
+- [x] **Step 4: Lint both files**
 
 ```bash
 /tmp/opencode/bin/shellcheck linux-install/{common.sh,uninstall.sh,tests/test_install_sandbox.sh}
@@ -204,11 +213,11 @@ bash -n linux-install/{common.sh,uninstall.sh}
 ```
 Expected: clean.
 
-- [ ] **Step 5: Run the sandbox test to green**
+- [x] **Step 5: Run the sandbox test to green**
 
 `bash linux-install/tests/test_install_sandbox.sh` → all cases PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add linux-install/common.sh linux-install/uninstall.sh linux-install/tests/test_install_sandbox.sh
@@ -235,7 +244,7 @@ git commit -m "refactor: share installer helpers via common.sh; harden uninstall
   - Templates unchanged: `config.ini`, `micsource.desktop`, autostart entry, systemd unit, pipewire lock heredocs.
   - `main()` order: `step_sanity` (bare — immediate exit on failure), then each step called as today with `|| true` recording to be added in Task 5 (for this task keep `|| true` so behavior matches today).
 
-- [ ] **Step 1: Write the failing install test cases**
+- [x] **Step 1: Write the failing install test cases**
 
 Add to `test_install_sandbox.sh` (all with `XDG_CURRENT_DESKTOP=GNOME`, stubs in PATH, `printf 'n\nn\n'` fed to stdin):
 
@@ -245,15 +254,15 @@ Add to `test_install_sandbox.sh` (all with `XDG_CURRENT_DESKTOP=GNOME`, stubs in
 
 Run → expect FAIL (install.sh still embeds heredocs; case 1's `project.path`/no-`DATA_DIR/gnome` assertions cannot pass yet).
 
-- [ ] **Step 2: Rewrite install.sh to the v2 structure**
+- [x] **Step 2: Rewrite install.sh to the v2 structure**
 
 Delete heredoc blocks `__CLIEOF__`, `__APPEOF__`, `__GUIEOF__`, `__TRAYEOF__`, `__BUILDEOF__`, `__MONITOREOF__`, `__ICONEOF__`, `__EXTJSEOF__`, `__PREFSEOF__`, `__METADATAEOF__` and their `cat >`/`chmod` plumbing. Source `common.sh` (same line as uninstall.sh) and delete install.sh's duplicated color/helper/path block (keep script-specific vars: `CONFIG_PATH DATA_ICON ICON_PATH DESKTOP_FILE AUTOSTART_FILE UNIT_FILE CLI_PATH ADB_PATH_FILE APK_PATH_FILE ENV_PATH_FILE BUILD_ENV_DIR ADB_BUNDLE_DIR STAGED_APK ANDROID_PKG DEVICE_SOCKET HOST_SOCKET WITH_TRAY` — note `AUTOSTART_FILE`, `BIN_LINK`, `ADB_LINK`, `GNOME_EXT_*`, `PULSE_LOCK_CONF` now come from `common.sh`). Implement `step_assets`, the v2 `step_sanity`, `step_gnome_extension` from assets, icon copies, and strict args exactly as specified in Interfaces. `step_cli` becomes: symlink handling + PATH warning + `ok "CLI ready. Try: micsource help"` (its payload-writing part moved to `step_assets`).
 
-- [ ] **Step 3: Run the sandbox test to green**
+- [x] **Step 3: Run the sandbox test to green**
 
 `bash linux-install/tests/test_install_sandbox.sh` → all cases (Task 3's + new) PASS.
 
-- [ ] **Step 4: Lint and format**
+- [x] **Step 4: Lint and format**
 
 ```bash
 /tmp/opencode/bin/shellcheck linux-install/install.sh    # zero warnings
@@ -262,7 +271,7 @@ bash -n linux-install/install.sh
 ```
 Expected: clean (fix warnings behavior-preservingly).
 
-- [ ] **Step 5: Confirm no payload logic changed**
+- [x] **Step 5: Confirm no payload logic changed**
 
 ```bash
 diff linux-install/assets/micsource-app.py  ~/.local/share/micsource/micsource-app.py
@@ -271,7 +280,7 @@ grep -c '__CLIEOF__\|__MONITOREOF__\|__APPEOF__' linux-install/install.sh   # ex
 ```
 Expected: two empty diffs, count `0`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add linux-install/install.sh linux-install/tests/test_install_sandbox.sh
@@ -298,7 +307,7 @@ git commit -m "refactor: install.sh copies assets instead of embedding heredocs"
   - `step_apk`: skip `cp` when `readlink -f "$apk"` equals `readlink -f "${STAGED_APK}"` (avoids `cp: same file` noise when the staged APK is the only candidate).
   - `step_tray`: replace the stale AppIndicator import probe (the tray is pure D-Bus now) with a `python3 -c 'import gi; gi.require_version("Gio", "2.0")'`-style check whose message names `python3-gi`; keep the GNOME-pill hint.
 
-- [ ] **Step 1: Write the failing failure-path cases**
+- [x] **Step 1: Write the failing failure-path cases**
 
 Add to the sandbox test:
 
@@ -311,15 +320,15 @@ Add to the sandbox test:
 
 Run → expect cases 1–5 to FAIL where behavior doesn't exist yet (1 and 5 fail now: no strict args, unconditional gnome step; 2 fails: exit code is 0 today; 3 may already pass; 4 fails: no `fetch`/trap yet).
 
-- [ ] **Step 2: Implement `fetch`, scratch dirs + trap, `gnome_desktop()`**
+- [x] **Step 2: Implement `fetch`, scratch dirs + trap, `gnome_desktop()`**
 
 As specified in Interfaces; replace the three copy-pasted curl/wget blocks and the `$$`/fixed temp names (`${DATA_DIR}/.platform-tools.$$`, `.tools-tmp.$$`, `.jdk.tar.gz`, `.cmdline-tools.zip`) with `fetch` + `mktemp -d "${DATA_DIR}/.dl.XXXXXX"`.
 
-- [ ] **Step 3: Implement summary/exit policy + the honesty fixes**
+- [x] **Step 3: Implement summary/exit policy + the honesty fixes**
 
 `record_step` around every step call (replacing bare `|| true`), the `== Summary ==` block, final exit logic, `step_device` forward branch, `step_apk` same-file guard, `step_tray` probe replacement — all exactly per Interfaces.
 
-- [ ] **Step 4: Run tests to green + lint**
+- [x] **Step 4: Run tests to green + lint**
 
 ```bash
 bash linux-install/tests/test_install_sandbox.sh     # all cases PASS
@@ -328,7 +337,7 @@ bash linux-install/tests/test_install_sandbox.sh     # all cases PASS
 bash -n linux-install/install.sh
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add linux-install/install.sh linux-install/tests/test_install_sandbox.sh
@@ -348,15 +357,15 @@ git commit -m "fix: installer summary, exit codes, download hygiene, desktop det
 - Consumes: the finished behavior of Tasks 1–5.
 - Produces: docs consistent with the shipped scripts; no stale "splice"/"heredoc" claims in AGENT.md.
 
-- [ ] **Step 1: Rewrite AGENT.md's installer sections**
+- [x] **Step 1: Rewrite AGENT.md's installer sections**
 
 Replace the "Installer flow (`install.sh`)" narrative with the asset-copy model (step order, `step_assets`, `project.path`, common.sh, summary/exit codes, gnome detection rule, `fetch`/scratch dirs). Replace every "deployed files are the source of truth / heredocs spliced from them" statement with "assets in-repo are the source of truth; deployed copies are outputs written by install.sh". Extend the safety checklist with: shellcheck/shfmt-clean, python3 preflight, honest exit codes, sandbox-verified (`tests/test_install_sandbox.sh`), no-device-traffic guarantees (stubs). Note the two fixed bugs.
 
-- [ ] **Step 2: Annotate the tray plan's Task 4**
+- [x] **Step 2: Annotate the tray plan's Task 4**
 
 Add a line at the top of Task 4: superseded on 2026-11-07 by `2026-11-07-installer-assets-design.md` — the splice became asset seeding (deployed tray/app copied into `linux-install/assets/`).
 
-- [ ] **Step 3: Grep for stale claims and commit**
+- [x] **Step 3: Grep for stale claims and commit**
 
 ```bash
 grep -rn "splice" linux-install/docs/AGENT.md          # expect only historical/fixed-context mentions

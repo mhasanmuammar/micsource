@@ -58,6 +58,10 @@ chmod +x install.sh uninstall.sh
 ./install.sh
 ```
 
+For a host-only setup that stages the Linux files without probing adb or
+contacting a connected Android device, run `./install.sh --no-device`.
+Device setup can be done later with `micsource install-apk`.
+
 The installer will:
 
 1. Check for `adb` on your host; if missing, offer to download and install the official Google platform-tools bundle.

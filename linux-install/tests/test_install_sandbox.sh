@@ -667,6 +667,24 @@ case_install_readonly_config() {
     end_case
 }
 
+##############################################################################
+# Case 17: --no-device skips adb setup and device traffic
+##############################################################################
+case_install_no_device() {
+    start_case 17 "--no-device installs host files without invoking adb"
+    make_sandbox
+    run_script $'n\nn\n' "${INSTALL}" --no-device
+    assert_exit 0 "${RC}"
+    assert_file "${TEST_CONFIG_INI}"
+    combine_output
+    assert_contains "${COMBINED}" "adb (SKIPPED)"
+    assert_contains "${COMBINED}" "device (SKIPPED)"
+    if grep -q '^adb ' "${STUB_LOG}"; then
+        fail_case "adb was invoked despite --no-device: $(cat "${STUB_LOG}")"
+    fi
+    end_case
+}
+
 # Invoked via `trap cleanup EXIT`; shellcheck cannot see that call → false
 # positive SC2317.
 # shellcheck disable=SC2317
@@ -696,6 +714,7 @@ main() {
     case_uninstall_keeps_bundle
     case_install_with_tray
     case_install_readonly_config
+    case_install_no_device
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1

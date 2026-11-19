@@ -103,8 +103,9 @@ the genuinely templated, variable-expanding files (config.ini, desktop entry,
 XDG autostart entry, systemd unit, pipewire lock) remain as inline heredocs —
 they are too small to gain from extraction.
 
-**Arguments are strict.** `--with-tray` and `-h/--help` are accepted; any
-other flag prints usage on stderr and exits 2.
+**Arguments are strict.** `--with-tray`, `--no-device`, and `-h/--help` are
+accepted; any other flag prints usage on stderr and exits 2. `--no-device`
+skips both adb setup and device install/forwarding, without invoking adb.
 
 **Sanity preflight (`step_sanity`):** refuses root, requires Linux
 (`uname -s`), requires `$HOME` and `python3` (the failure message only says
@@ -718,10 +719,12 @@ replacement leaves the previous recording pipeline wedged).
   ok/skipped/failed, a summary is printed, and the installer exits 1 iff a
   required step failed. `step_device` reports the real forward result; the
   GNOME extension installs only on a detected GNOME desktop.
+- `--no-device` skips adb setup and all device probing/install/forwarding,
+  allowing host-side installation without invoking adb.
 - `fetch()` + `mktemp` scratch dirs + `EXIT` trap replaced three copy-pasted
   curl/wget blocks and fixed-name temp files; strict argument parsing rejects
   unknown flags (exit 2) in both scripts; `uninstall.sh` gained `--help`.
-- `linux-install/tests/test_install_sandbox.sh` (16 cases) drives install and
+- `linux-install/tests/test_install_sandbox.sh` (17 cases) drives install and
   uninstall in a fake `$HOME` with stub `adb`/`systemctl`/`gnome-extensions`
   ahead of PATH; it covers strict args, the python3 preflight, the required-
   vs-optional exit-code rule, download-failure cleanup, non-GNOME skip, the
@@ -835,7 +838,6 @@ The following defects were present in the previous version and are fixed:
 ## Suggested improvements
 
 - Pin and verify the platform-tools SHA256 checksum in `step_adb`.
-- Add a `--no-device` install mode for air-gapped builds.
 - Add APK signature verification before `adb install`.
 - Support non-GNOME desktops via `StatusNotifierItem` (KDE/Pantheon).
 

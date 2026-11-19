@@ -157,22 +157,26 @@ gnome_desktop() {
 }
 
 WITH_TRAY=0
+NO_DEVICE=0
 for arg in "$@"; do
     case "${arg}" in
     --with-tray) WITH_TRAY=1 ;;
+    --no-device) NO_DEVICE=1 ;;
     -h | --help)
         cat <<USAGE
-Usage: install.sh [--with-tray]
+Usage: install.sh [--with-tray] [--no-device]
 
   --with-tray  enable the legacy tray icon at login (XDG autostart).
                Without the flag the tray stays opt-in; enable it from the
                control window's Preferences at any time.
+  --no-device  skip adb setup and all device probing/install/forwarding.
+               Useful for preparing host files without an attached phone.
 USAGE
         exit 0
         ;;
     *)
         err "Unknown option: ${arg}"
-        printf 'Usage: install.sh [--with-tray]\n' >&2
+        printf 'Usage: install.sh [--with-tray] [--no-device]\n' >&2
         exit 2
         ;;
     esac
@@ -239,6 +243,10 @@ step_assets() {
 }
 
 step_adb() {
+    if [[ "${NO_DEVICE}" -eq 1 ]]; then
+        info "--no-device: skipping adb setup."
+        return 2
+    fi
     local adb_bin=""
 
     if have_cmd adb; then
@@ -476,6 +484,10 @@ step_apk() {
 }
 
 step_device() {
+    if [[ "${NO_DEVICE}" -eq 1 ]]; then
+        info "--no-device: skipping device install and forwarding."
+        return 2
+    fi
     local adb_bin
     adb_bin="$(cat "${ADB_PATH_FILE}" 2>/dev/null || echo "")"
     if [[ -z "${adb_bin}" || ! -x "${adb_bin}" ]]; then
