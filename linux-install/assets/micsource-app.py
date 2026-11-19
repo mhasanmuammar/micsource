@@ -234,6 +234,11 @@ class MicSourceApp(Adw.Application):
         self.btn_service_stop = None
         self.btn_install = None
         self.btn_build = None
+        self.entry_pair_address = None
+        self.entry_pair_code = None
+        self.entry_connect_address = None
+        self.device_dropdown = None
+        self.device_choices = []
         self._pref = None          # open preferences dialog/window (toasts)
         self.meter = None          # input level bar (Monitoring row suffix)
         self._meter_value = 0.0    # last level reported by the service
@@ -258,7 +263,7 @@ class MicSourceApp(Adw.Application):
         # Header bar (standard Adwaita window layout) + primary menu.
         header = Adw.HeaderBar(
             title_widget=Adw.WindowTitle(title="MicSource",
-                                         subtitle="phone mic over USB"))
+                                         subtitle="phone mic over USB or Wi-Fi"))
         menu_btn = Gtk.MenuButton()
         menu_btn.set_icon_name("open-menu-symbolic")
         menu_btn.set_tooltip_text("Menu")
@@ -314,7 +319,49 @@ class MicSourceApp(Adw.Application):
         content.append(svc_box)
 
         # ---- device utilities (boxed list with flat row buttons) ---------
-        util_group = Adw.PreferencesGroup(title="Device")
+        util_group = Adw.PreferencesGroup(title="Device & Wireless debugging")
+        self.device_dropdown = Gtk.DropDown.new_from_strings(
+            ["Refresh to list connected devices"])
+        device_row = Adw.ActionRow(
+            title="Connected devices",
+            subtitle="USB and already connected Wi-Fi devices")
+        device_row.add_suffix(self.device_dropdown)
+        util_group.add(device_row)
+        self._action_row_button(
+            util_group, "Refresh devices", "List authorized, offline, and unauthorized devices",
+            "Refresh", self.on_refresh_devices)
+        self._action_row_button(
+            util_group, "Use selected device", "MicSource stores the selected ADB serial",
+            "Select", self.on_select_device)
+        self.entry_pair_address = Gtk.Entry(placeholder_text="Phone pairing address, e.g. 192.168.1.20:41000")
+        self.entry_pair_address.set_hexpand(True)
+        pair_address_row = Adw.ActionRow(title="Pairing address")
+        pair_address_row.add_suffix(self.entry_pair_address)
+        util_group.add(pair_address_row)
+        self.entry_pair_code = Gtk.Entry(placeholder_text="Six-digit temporary code")
+        self.entry_pair_code.set_visibility(False)
+        self.entry_pair_code.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        self.entry_pair_code.set_max_length(6)
+        code_row = Adw.ActionRow(title="Pairing code")
+        code_row.add_suffix(self.entry_pair_code)
+        util_group.add(code_row)
+        self._action_row_button(
+            util_group, "Pair phone", "Use the pairing port and temporary code shown by Android",
+            "Pair", self.on_wireless_pair)
+        self.entry_connect_address = Gtk.Entry(placeholder_text="Separate wireless connection address, e.g. 192.168.1.20:38000")
+        self.entry_connect_address.set_hexpand(True)
+        connect_address_row = Adw.ActionRow(title="Connection address")
+        connect_address_row.add_suffix(self.entry_connect_address)
+        util_group.add(connect_address_row)
+        self._action_row_button(
+            util_group, "Connect phone", "Connect and create MicSource's audio socket forward",
+            "Connect", self.on_wireless_connect)
+        self._action_row_button(
+            util_group, "Find Wi-Fi devices", "Optional ADB mDNS discovery; manual address entry also works",
+            "Discover", self.on_wireless_discover)
+        self._action_row_button(
+            util_group, "Disconnect Wi-Fi device", "Disconnect the entered address",
+            "Disconnect", self.on_wireless_disconnect)
         self._action_row_button(
             util_group, "Install APK on the Phone",
             "Installs the staged APK and restores the socket forward",
@@ -975,6 +1022,136 @@ class MicSourceApp(Adw.Application):
             GLib.idle_add(self._install_done, code, out)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _run_cli_async(self, args, callback, *, input_text=None, timeout=20):
+        def worker():
+            try:
+                proc = subprocess.run(
+                    ["bash", CLI_PATH, *args], input=input_text,
+                    capture_output=True, text=True, timeout=timeout)
+                output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+                code = proc.returncode
+            except FileNotFoundError:
+                code, output = 127, "MicSource CLI not found; run install.sh first"
+            except subprocess.TimeoutExpired:
+                code, output = 124, "ADB operation timed out"
+            GLib.idle_add(callback, code, output)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_refresh_devices(self, _btn):
+        self.log_line("devices: listing connected phones…")
+        self._run_cli_async(["devices"], self._devices_loaded, timeout=12)
+
+    def _devices_loaded(self, code, output):
+        choices = []
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[1] in ("device", "offline", "unauthorized"):
+                choices.append((fields[0], fields[1]))
+        self.device_choices = choices
+        labels = [f"{serial} — {state}" for serial, state in choices]
+        if not labels:
+            labels = ["No devices found; connect USB or enable Wireless debugging"]
+        self.device_dropdown.set_model(Gtk.StringList.new(labels))
+        self.device_dropdown.set_selected(0)
+        for index, (serial, _state) in enumerate(choices):
+            if serial == SERIAL:
+                self.device_dropdown.set_selected(index)
+                break
+        self.log_line(output or "No ADB devices found.")
+        if code:
+            self._error_dialog("Could not list devices", output or "ADB failed")
+        return False
+
+    def on_select_device(self, _btn):
+        index = self.device_dropdown.get_selected()
+        if index >= len(self.device_choices):
+            self._error_dialog("No device selected", "Refresh devices, then select an online authorized device.")
+            return
+        serial, state = self.device_choices[index]
+        if state != "device":
+            self._error_dialog("Device unavailable", f"{serial} is {state}. Authorize debugging on the phone and refresh.")
+            return
+        self._run_cli_async(["device-select", serial], self._device_selected)
+
+    def _device_selected(self, code, output):
+        self.log_line(output or "Device selection saved.")
+        if code:
+            self._error_dialog("Could not select device", output)
+        else:
+            _load_config()
+            self._refresh()
+        return False
+
+    def on_wireless_pair(self, _btn):
+        endpoint = self.entry_pair_address.get_text().strip()
+        code = self.entry_pair_code.get_text().strip()
+        self.entry_pair_code.set_text("")
+        if not re.fullmatch(r"[0-9]{6}", code):
+            self._error_dialog("Invalid pairing code", "Enter the six-digit temporary code shown by Android.")
+            code = ""
+            return
+        self.log_line(f"wireless-pair: pairing with {endpoint}…")
+        self._run_cli_async(["wireless-pair", endpoint], self._wireless_pair_done,
+                            input_text=code + "\n", timeout=45)
+        code = ""
+
+    def _wireless_pair_done(self, code, output):
+        self.log_line(output or ("Wireless pairing complete." if code == 0 else "Wireless pairing failed."))
+        if code:
+            self._error_dialog("Wireless pairing failed", output or "Check that the temporary pairing address and code are current.")
+        return False
+
+    def on_wireless_connect(self, _btn):
+        endpoint = self.entry_connect_address.get_text().strip()
+        self.log_line(f"wireless-connect: connecting to {endpoint}…")
+        self._run_cli_async(["wireless-connect", endpoint], self._wireless_connect_done,
+                            timeout=30)
+
+    def _wireless_connect_done(self, code, output):
+        self.log_line(output or ("Wireless connection and audio forward active." if code == 0 else "Wireless connection failed."))
+        if code:
+            self._error_dialog("Wireless connection failed", output or "Check the connection address, network, and phone authorization.")
+        else:
+            _load_config()
+            self._refresh()
+        return False
+
+    def on_wireless_discover(self, _btn):
+        self._run_cli_async(["wireless-discover"], self._wireless_discovered,
+                            timeout=15)
+
+    def _wireless_discovered(self, code, output):
+        self.log_line(output or "No Wireless debugging services discovered.")
+        matches = []
+        for line in output.splitlines():
+            if "_adb-tls-connect._tcp" in line:
+                match = re.search(r"(?:\s|^)(\[[^]]+\]:\d+|[A-Za-z0-9._-]+:\d+)\s*$", line)
+                if match:
+                    matches.append(match.group(1))
+        if len(matches) == 1:
+            self.entry_connect_address.set_text(matches[0])
+            self.log_line("One connect endpoint filled in; review it and choose Connect.")
+        elif len(matches) > 1:
+            self._error_dialog("Multiple Wi-Fi devices found",
+                               "Choose the desired _adb-tls-connect._tcp endpoint from the log and enter it in Connection address.\n\n" + "\n".join(matches))
+        elif code:
+            self._error_dialog("Discovery unavailable", output or "This ADB build may not support mDNS discovery; enter the phone's connection address manually.")
+        return False
+
+    def on_wireless_disconnect(self, _btn):
+        endpoint = self.entry_connect_address.get_text().strip()
+        args = ["wireless-disconnect"] + ([endpoint] if endpoint else [])
+        self._run_cli_async(args, self._wireless_disconnect_done)
+
+    def _wireless_disconnect_done(self, code, output):
+        self.log_line(output or "Wireless device disconnected.")
+        if code:
+            self._error_dialog("Could not disconnect device", output)
+        else:
+            _load_config()
+            self._refresh()
+        return False
 
     def _install_done(self, code, out):
         self.btn_install.set_sensitive(True)

@@ -1,6 +1,6 @@
 # Android MicSource Branding, Wireless Debugging, and Phone GUI Plan
 
-**Status:** Tasks 1–3 implemented; Tasks 4–5 proposed.
+**Status:** Tasks 1–4 implemented; Task 5 remains.
 
 > **Progress (2026-11-19):** Task 1 now routes all MicSource ADB clients through
 > port 5038 by default, stops publishing the bundle as bare `adb`, migrates
@@ -24,6 +24,15 @@
 > options shortcut. The API 14-compatible AppCompat theme is retained. APK
 > build passes. Device lifecycle and permission-flow checks remain in Task 5;
 > no test phone/emulator was available in this sandbox.
+>
+> **Progress (2026-11-19):** Task 4 adds host CLI and GUI flows to list and
+> select devices, pair using the temporary six-digit code over stdin, connect
+> using the separate endpoint, disconnect, and optionally discover
+> `_adb-tls-connect._tcp` services with mDNS. The selected serial is saved in
+> `[device]` and used across CLI/GUI ADB calls; wireless connect restores the
+> existing audio forward. Four stub-backed wireless CLI tests pass, as do
+> the ADB routing tests and 24 installer sandbox cases. Physical USB/Wi-Fi
+> streaming checks remain in Task 5.
 
 ## Goal
 
