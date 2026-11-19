@@ -50,7 +50,9 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         buildScreen();
         updatePermissions();
-        bindService(new Intent(this, RecordService.class), serviceConnection, BIND_AUTO_CREATE);
+        if (hasMicrophonePermission()) {
+            bindService(new Intent(this, RecordService.class), serviceConnection, BIND_AUTO_CREATE);
+        }
     }
 
     @Override
@@ -175,8 +177,10 @@ public class MainActivity extends Activity {
         boolean start = startAfterPermission;
         startAfterPermission = false;
         updatePermissions();
-        if (start && hasMicrophonePermission()) RecordService.start(this);
-        else if (start) showState(RecordService.State.PERMISSION_NEEDED);
+        if (start && hasMicrophonePermission()) {
+            RecordService.start(this);
+            bindService(new Intent(this, RecordService.class), serviceConnection, BIND_AUTO_CREATE);
+        } else if (start) showState(RecordService.State.PERMISSION_NEEDED);
         else showState(service == null ? RecordService.State.STOPPED : service.getState());
     }
 
