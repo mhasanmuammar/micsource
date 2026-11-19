@@ -43,6 +43,9 @@ ENV_PATH_FILE="${DATA_DIR}/build-env.path"
 BUILD_ENV_DIR="${DATA_DIR}/build-env"
 ADB_BUNDLE_DIR="${DATA_DIR}/adb-bundle"
 STAGED_APK="${DATA_DIR}/micsource-release.apk"
+PLATFORM_TOOLS_VERSION="37.0.1"
+PLATFORM_TOOLS_SHA256="d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1"
+PLATFORM_TOOLS_SHA1="477254aa5f903c15cf51001717bdf347fb6b53e0"
 
 ANDROID_PKG="fr.dzx.audiosource" # Android package (baked into the APK)
 DEVICE_SOCKET="audiosource"      # device-side socket (RecordThread)
@@ -265,8 +268,12 @@ step_adb() {
             err "'unzip' is required to unpack the bundle; install it and re-run."
             return 1
         fi
+        if ! have_cmd sha256sum || ! have_cmd sha1sum; then
+            err "'sha256sum' and 'sha1sum' are required to verify platform-tools."
+            return 1
+        fi
         local url scratch zip
-        url="https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
+        url="https://dl.google.com/android/repository/platform-tools_r${PLATFORM_TOOLS_VERSION}-linux.zip"
         scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")" || {
             err "Could not create a download directory under ${DATA_DIR}."
             return 1
@@ -276,6 +283,16 @@ step_adb() {
         info "Downloading platform-tools..."
         if ! fetch "${url}" "${zip}"; then
             err "Download failed."
+            return 1
+        fi
+        if ! printf '%s  %s\n' "${PLATFORM_TOOLS_SHA256}" "${zip}" |
+            sha256sum --check --status; then
+            err "SHA-256 verification failed for platform-tools ${PLATFORM_TOOLS_VERSION}."
+            return 1
+        fi
+        if ! printf '%s  %s\n' "${PLATFORM_TOOLS_SHA1}" "${zip}" |
+            sha1sum --check --status; then
+            err "Google SDK metadata SHA-1 verification failed for platform-tools ${PLATFORM_TOOLS_VERSION}."
             return 1
         fi
         unzip -q "${zip}" -d "${scratch}" || {

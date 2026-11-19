@@ -132,13 +132,15 @@ download. Scratch dirs are `mktemp -d` under the data dir, tracked in
    `${DATA_DIR}/project.path` (the checkout root) for `micsource-build`.
    `assets/gnome/` is deliberately not copied here (step 11).
 2. `step_adb` — detects `adb` (PATH or bundled). If missing, prompts to download
-   the official Google platform-tools into `~/.local/share/micsource/adb-bundle/`.
+   pinned Google platform-tools 37.0.1 into `~/.local/share/micsource/adb-bundle/`.
    Writes the resolved binary path to `adb.path` in both branches (found / bundle
    installed). After installing the bundle it also symlinks
    `~/.local/bin/adb` → bundled adb (guarded; never replaces an existing
    `~/.local/bin/adb`) so `adb` works in terminals without manual PATH edits;
    when `~/.local/bin` is not on PATH it prints the export line instead.
-   Requires `curl`/`wget` + `unzip`; cleans up partial downloads on failure.
+   Requires `curl`/`wget`, `unzip`, `sha256sum`, and `sha1sum`; verifies the
+   pinned SHA-256 and Google SDK metadata SHA-1 before extraction, and cleans
+   up partial downloads on failure.
 3. `step_build_env` — checks for a JDK 17 + Android SDK (system: java +
    ANDROID_HOME/`local.properties`; or the installer-managed portable env in
    `~/.local/share/micsource/build-env/`). If none is complete, offers to
@@ -721,10 +723,12 @@ replacement leaves the previous recording pipeline wedged).
   GNOME extension installs only on a detected GNOME desktop.
 - `--no-device` skips adb setup and all device probing/install/forwarding,
   allowing host-side installation without invoking adb.
+- The platform-tools 37.0.1 archive is pinned and checked against SHA-256 and
+  Google's SDK metadata SHA-1 before extraction.
 - `fetch()` + `mktemp` scratch dirs + `EXIT` trap replaced three copy-pasted
   curl/wget blocks and fixed-name temp files; strict argument parsing rejects
   unknown flags (exit 2) in both scripts; `uninstall.sh` gained `--help`.
-- `linux-install/tests/test_install_sandbox.sh` (17 cases) drives install and
+- `linux-install/tests/test_install_sandbox.sh` (18 cases) drives install and
   uninstall in a fake `$HOME` with stub `adb`/`systemctl`/`gnome-extensions`
   ahead of PATH; it covers strict args, the python3 preflight, the required-
   vs-optional exit-code rule, download-failure cleanup, non-GNOME skip, the
@@ -804,8 +808,8 @@ The following defects were present in the previous version and are fixed:
   when it installs the portable SDK (writes only if absent; it is the
   checkout's gitignored Android SDK pointer).
 - [x] No system package installation without explicit user confirmation.
-- [x] adb bundle download is over HTTPS from `dl.google.com`; checksum not
-  pinned (future improvement: verify SHA256).
+- [x] adb bundle download is over HTTPS from `dl.google.com` and verified
+  against pinned SHA-256 and Google SDK metadata SHA-1 before extraction.
 - [x] Every `rm -rf` in the uninstaller is guarded by an ownership check.
 - [x] Config file is mode 600; control socket is mode 600.
 - [x] Idempotent install and uninstall (verified in a sandboxed HOME).
@@ -837,7 +841,6 @@ The following defects were present in the previous version and are fixed:
 
 ## Suggested improvements
 
-- Pin and verify the platform-tools SHA256 checksum in `step_adb`.
 - Add APK signature verification before `adb install`.
 - Support non-GNOME desktops via `StatusNotifierItem` (KDE/Pantheon).
 

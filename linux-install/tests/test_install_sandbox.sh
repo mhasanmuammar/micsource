@@ -268,15 +268,9 @@ make_full_fixture() {
     : >"${TEST_DATA_DIR}/micsource-monitor.py"
     : >"${TEST_DATA_DIR}/project.path"
 
-    # The monitor's control socket, so case 3's assert_gone is not vacuous.
-    python3 - "${TEST_SOCK}" <<'PY'
-import socket
-import sys
-
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.bind(sys.argv[1])
-sock.close()
-PY
+    # A filesystem marker is sufficient: uninstall removes the socket path
+    # with rm -f, and this sandbox may deny AF_UNIX bind() via seccomp.
+    : >"${TEST_SOCK}"
 }
 
 ##############################################################################
@@ -526,7 +520,7 @@ case_install_download_failure() {
     mkdir -p "${dlbin}"
     local tool tool_path
     for tool in bash uname dirname basename mktemp cp chmod cat mkdir ln \
-        rm mv grep head sed tail python3 tr readlink sleep; do
+        rm mv grep head sed tail python3 tr readlink sleep sha256sum sha1sum; do
         if tool_path="$(command -v "${tool}")"; then
             ln -sf "${tool_path}" "${dlbin}/${tool}"
         fi
@@ -584,6 +578,73 @@ STUB
     if [[ -n "${leftovers}" ]]; then
         fail_case "download scratch left behind: ${leftovers}"
     fi
+    end_case
+}
+
+##############################################################################
+# Case 18: a checksum mismatch rejects the archive before extraction
+##############################################################################
+case_install_checksum_mismatch() {
+    start_case 18 "platform-tools checksum mismatch fails before unzip"
+    make_sandbox
+    local dlbin="${SANDBOX}/checksum-stubbin"
+    mkdir -p "${dlbin}"
+    local tool tool_path
+    for tool in bash uname dirname basename mktemp cp chmod cat mkdir ln \
+        rm mv grep head sed tail python3 tr readlink sleep sha256sum sha1sum; do
+        if tool_path="$(command -v "${tool}")"; then
+            ln -sf "${tool_path}" "${dlbin}/${tool}"
+        fi
+    done
+    cat >"${dlbin}/curl" <<'STUB'
+#!/bin/sh
+printf 'curl %s\n' "$*" >> "${STUB_LOG}"
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then
+        shift
+        printf 'not the pinned archive\n' > "$1"
+        exit 0
+    fi
+    shift
+done
+exit 2
+STUB
+    cat >"${dlbin}/unzip" <<'STUB'
+#!/bin/sh
+printf 'unzip %s\n' "$*" >> "${STUB_LOG}"
+exit 0
+STUB
+    cat >"${dlbin}/systemctl" <<'STUB'
+#!/bin/sh
+printf 'systemctl %s\n' "$*" >> "${STUB_LOG}"
+exit 0
+STUB
+    cat >"${dlbin}/gnome-extensions" <<'STUB'
+#!/bin/sh
+printf 'gnome-extensions %s\n' "$*" >> "${STUB_LOG}"
+exit 0
+STUB
+    chmod +x "${dlbin}/curl" "${dlbin}/unzip" "${dlbin}/systemctl" \
+        "${dlbin}/gnome-extensions"
+    RC=0
+    printf 'y\nn\n' |
+        env \
+            HOME="${SANDBOX_HOME}" \
+            XDG_CURRENT_DESKTOP="GNOME" \
+            GNOME_DESKTOP_SESSION_ID="" \
+            JAVA_HOME="" \
+            ANDROID_HOME="" \
+            NO_COLOR="" \
+            STUB_LOG="${STUB_LOG}" \
+            PATH="${dlbin}" \
+            /usr/bin/bash "${INSTALL}" \
+            >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 0 "${RC}"
+    combine_output
+    assert_contains "${COMBINED}" "SHA-256 verification failed"
+    assert_contains "${COMBINED}" "adb (FAILED)"
+    assert_not_contains "${STUB_LOG}" "unzip "
+    assert_gone "${TEST_ADB_BUNDLE_DIR}/platform-tools"
     end_case
 }
 
@@ -677,8 +738,8 @@ case_install_no_device() {
     assert_exit 0 "${RC}"
     assert_file "${TEST_CONFIG_INI}"
     combine_output
-    assert_contains "${COMBINED}" "adb (SKIPPED)"
-    assert_contains "${COMBINED}" "device (SKIPPED)"
+    assert_contains "${COMBINED}" "adb (skipped)"
+    assert_contains "${COMBINED}" "device (skipped)"
     if grep -q '^adb ' "${STUB_LOG}"; then
         fail_case "adb was invoked despite --no-device: $(cat "${STUB_LOG}")"
     fi
@@ -715,6 +776,7 @@ main() {
     case_install_with_tray
     case_install_readonly_config
     case_install_no_device
+    case_install_checksum_mismatch
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1

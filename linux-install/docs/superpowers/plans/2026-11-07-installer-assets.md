@@ -4,10 +4,11 @@
 > assets, current installer/docs, and implementation commits in repository
 > history. Task 7 remains unconfirmed: its live-home install, deployed-file
 > drift checks, and service/audio post-checks have not been evidenced in this
-> checkout. A 2026-11-19 sandbox-suite attempt stopped in case 3 because the
-> fixture's Unix socket bind raised `PermissionError`, before the new case
-> could run. Do not infer completion from the sandbox suite. The next follow-up
-> is `--no-device` support (implemented in the 2026-11-19 development cycle).
+> checkout. The sandbox's AF_UNIX bind restriction was handled by using a
+> regular marker file for the uninstall-path assertion; the full suite now
+> passes 18/18 cases. Follow-up cycles implemented `--no-device` and pinned
+> platform-tools checksum verification. Task 7's broader lint/syntax checks
+> and live-home checks remain unconfirmed.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
