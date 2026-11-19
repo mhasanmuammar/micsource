@@ -7,7 +7,7 @@
 # files under linux-install/assets/ (the source of truth); this script
 # copies them into place instead of embedding heredocs:
 #   * payload assets -> ~/.local/share/micsource/ (CLI, GUI wrapper, build
-#     helper, app/tray/monitor Python) + project.path pointing back at the
+#     helper, APK verifier, app/tray/monitor Python) + project.path pointing back at the
 #     checkout
 #   * adb (bundled if missing) + optional portable JDK 17 / Android SDK
 #   * builds or stages the APK and installs it on the connected device
@@ -217,7 +217,7 @@ step_sanity() {
 
 step_assets() {
     local f failed=0
-    for f in micsource micsource-gui micsource-build \
+    for f in micsource micsource-gui micsource-build micsource-apk-verify \
         micsource-app.py micsource-tray.py micsource-monitor.py; do
         if [[ ! -f "${INSTALL_DIR}/assets/${f}" ]]; then
             err "Missing installer asset: ${INSTALL_DIR}/assets/${f}"
@@ -233,7 +233,8 @@ step_assets() {
         return 1
     fi
     chmod 755 "${DATA_DIR}/micsource" "${DATA_DIR}/micsource-gui" \
-        "${DATA_DIR}/micsource-build" "${DATA_DIR}/micsource-app.py" \
+        "${DATA_DIR}/micsource-build" "${DATA_DIR}/micsource-apk-verify" \
+        "${DATA_DIR}/micsource-app.py" \
         "${DATA_DIR}/micsource-tray.py" "${DATA_DIR}/micsource-monitor.py" || {
         err "Failed to make the payload files executable in ${DATA_DIR}"
         return 1
@@ -519,6 +520,10 @@ step_device() {
         info "Connect the phone, enable USB debugging, authorize the host, then run:"
         info "  micsource install-apk   # install + forward"
         return 2
+    fi
+    if ! "${DATA_DIR}/micsource-apk-verify" "${STAGED_APK}"; then
+        err "Refusing to install an APK without a valid signature."
+        return 1
     fi
     info "Installing APK on the device..."
     if "${adb_bin}" install -r -t "${STAGED_APK}"; then

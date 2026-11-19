@@ -37,6 +37,7 @@ linux-install/
 │   ├── micsource       # CLI dispatcher (bash)
 │   ├── micsource-gui   # launcher wrapper (bash)
 │   ├── micsource-build # build helper (bash)
+│   ├── micsource-apk-verify # APK signature verifier (bash)
 │   ├── micsource-app.py
 │   ├── micsource-tray.py
 │   ├── micsource-monitor.py
@@ -54,6 +55,7 @@ Install-time artifacts (created by `install.sh`, owned by the user):
 ```
 ~/.local/share/micsource/
 ├── micsource                   # CLI dispatcher (copied from assets/micsource)
+├── micsource-apk-verify        # apksigner check before device install
 ├── micsource-release.apk       # staged APK copy
 ├── apk.path                    # path to the source APK
 ├── adb.path                    # adb binary path used
@@ -124,8 +126,8 @@ failure or skip is recorded, but the exit stays 0.
 download. Scratch dirs are `mktemp -d` under the data dir, tracked in
 `TMP_DIRS`, and removed by an `EXIT` trap on success, failure, or interrupt.
 
-1. `step_assets` — copies the six payload files (`micsource`,
-   `micsource-gui`, `micsource-build`, `micsource-app.py`,
+1. `step_assets` — copies the seven payload files (`micsource`,
+   `micsource-gui`, `micsource-build`, `micsource-apk-verify`, `micsource-app.py`,
    `micsource-tray.py`, `micsource-monitor.py`) from `assets/` into
    `~/.local/share/micsource/`, then `chmod 755`s the entry points. A
    missing or unreadable asset fails the step loudly. Also writes
@@ -157,8 +159,9 @@ download. Scratch dirs are `mktemp -d` under the data dir, tracked in
    `app/build.gradle`: without the keystore the automatic debug key signs the
    APK). After the build it rescans the candidate list; stages the copy as
    `~/.local/share/micsource/micsource-release.apk`; writes `apk.path`.
-5. `step_device` — checks `adb get-state`; if a device is online, installs the
-   APK (`adb install -r -t`), launches `fr.dzx.audiosource/.MainActivity`, and
+5. `step_device` — checks `adb get-state`; if a device is online, verifies the
+   APK with SDK `apksigner` (`verify --verbose -Werr --print-certs`) before
+   `adb install -r -t`, then launches `fr.dzx.audiosource/.MainActivity` and
    sets up `adb forward localabstract:micsource localabstract:audiosource`.
    Reports the **real** forward result: a failed forward fails the step
    (previously it printed "adb forward set" unconditionally). No device online
@@ -524,7 +527,8 @@ Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `build-apk`,
   forwarding mode (connect → stream to paplay/aplay until Ctrl+C).
 - `install-apk` reinstalls the staged APK, launches `MainActivity`, and
   re-establishes the `localabstract:micsource -> localabstract:audiosource`
-  forward.
+  forward. It first verifies signature integrity with `micsource-apk-verify`;
+  this does not pin or authenticate a particular signer identity.
 
 ## Monitor service (`micsource-monitor.py`)
 
@@ -723,12 +727,14 @@ replacement leaves the previous recording pipeline wedged).
   GNOME extension installs only on a detected GNOME desktop.
 - `--no-device` skips adb setup and all device probing/install/forwarding,
   allowing host-side installation without invoking adb.
+- APK installs are checked with Android SDK `apksigner`; the installer step
+  and CLI share the same verifier asset.
 - The platform-tools 37.0.1 archive is pinned and checked against SHA-256 and
   Google's SDK metadata SHA-1 before extraction.
 - `fetch()` + `mktemp` scratch dirs + `EXIT` trap replaced three copy-pasted
   curl/wget blocks and fixed-name temp files; strict argument parsing rejects
   unknown flags (exit 2) in both scripts; `uninstall.sh` gained `--help`.
-- `linux-install/tests/test_install_sandbox.sh` (18 cases) drives install and
+- `linux-install/tests/test_install_sandbox.sh` (20 cases) drives install and
   uninstall in a fake `$HOME` with stub `adb`/`systemctl`/`gnome-extensions`
   ahead of PATH; it covers strict args, the python3 preflight, the required-
   vs-optional exit-code rule, download-failure cleanup, non-GNOME skip, the
@@ -838,10 +844,11 @@ The following defects were present in the previous version and are fixed:
   `get-state`) and PATH-scopes every run, so tests never touch a connected
   phone; the installer itself only installs/forwards when a device is already
   online.
+- APK signature verification confirms integrity with `apksigner`; it does not
+  establish that a signer is MicSource's trusted publisher.
 
 ## Suggested improvements
 
-- Add APK signature verification before `adb install`.
 - Support non-GNOME desktops via `StatusNotifierItem` (KDE/Pantheon).
 
 - PipeWire >= 1.6 stream policy: the installer writes

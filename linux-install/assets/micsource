@@ -222,6 +222,10 @@ device_install() {
         info "Place a prebuilt APK there (see docs/USER.md) or re-run install.sh after building."
         exit 1
     fi
+    if ! "${DATA_DIR}/micsource-apk-verify" "${APK_STAGED}"; then
+        err "Refusing to install an APK without a valid signature."
+        exit 1
+    fi
     local install_out=""
     if ! install_out="$("$adb_bin" install -r -t "${APK_STAGED}" 2>&1)"; then
         if [[ "$install_out" == *INSTALL_FAILED_UPDATE_INCOMPATIBLE* ]]; then

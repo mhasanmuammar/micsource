@@ -17,6 +17,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALL="${REPO_ROOT}/linux-install/install.sh"
 UNINSTALL="${REPO_ROOT}/linux-install/uninstall.sh"
+APK_VERIFY="${REPO_ROOT}/linux-install/assets/micsource-apk-verify"
 RUNTIME_ROOT="/tmp/opencode"
 
 PASSED=0
@@ -382,7 +383,7 @@ case_install_happy_path() {
     assert_file "${TEST_UNIT}"
     assert_file "${TEST_ICON}"
     local f
-    for f in micsource micsource-gui micsource-build \
+    for f in micsource micsource-gui micsource-build micsource-apk-verify \
         micsource-app.py micsource-tray.py micsource-monitor.py; do
         assert_file "${TEST_DATA_DIR}/${f}"
         if [[ ! -x "${TEST_DATA_DIR}/${f}" ]]; then
@@ -649,6 +650,83 @@ STUB
 }
 
 ##############################################################################
+# Case 19: APK verifier checks through apksigner and rejects invalid signatures
+##############################################################################
+case_apk_signature_verification() {
+    start_case 19 "APK verifier accepts valid signatures and rejects invalid ones"
+    make_sandbox
+    local sdk="${SANDBOX}/android-sdk"
+    local apk="${SANDBOX}/sample.apk"
+    mkdir -p "${TEST_DATA_DIR}" "${sdk}/build-tools/34.0.0"
+    printf 'ANDROID_HOME=%s\n' "${sdk}" >"${TEST_DATA_DIR}/build-env.path"
+    printf 'fixture APK\n' >"${apk}"
+    cat >"${sdk}/build-tools/34.0.0/apksigner" <<'STUB'
+#!/bin/sh
+printf 'apksigner %s\n' "$*" >> "${STUB_LOG}"
+exit "${APKSIGNER_RESULT:-0}"
+STUB
+    chmod +x "${sdk}/build-tools/34.0.0/apksigner"
+
+    RC=0
+    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" PATH="/usr/bin:/bin" \
+        bash "${APK_VERIFY}" "${apk}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 0 "${RC}"
+    assert_contains "${STUB_LOG}" "apksigner verify --verbose -Werr --print-certs ${apk}"
+
+    RC=0
+    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" APKSIGNER_RESULT=1 \
+        PATH="/usr/bin:/bin" bash "${APK_VERIFY}" "${apk}" \
+        >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 1 "${RC}"
+    assert_contains "${TEST_STDERR}" "APK signature verification failed"
+    end_case
+}
+
+##############################################################################
+# Case 20: install-apk verifies before any adb install command
+##############################################################################
+case_cli_install_requires_valid_apk_signature() {
+    start_case 20 "install-apk refuses invalid signatures before adb install"
+    make_sandbox
+    local sdk="${SANDBOX}/android-sdk"
+    local apk="${TEST_DATA_DIR}/micsource-release.apk"
+    mkdir -p "${TEST_DATA_DIR}" "${sdk}/build-tools/34.0.0"
+    printf '%s\n' "${STUBBIN}/adb" >"${TEST_DATA_DIR}/adb.path"
+    printf 'ANDROID_HOME=%s\n' "${sdk}" >"${TEST_DATA_DIR}/build-env.path"
+    printf 'fixture APK\n' >"${apk}"
+    cp "${APK_VERIFY}" "${TEST_DATA_DIR}/micsource-apk-verify"
+    chmod 755 "${TEST_DATA_DIR}/micsource-apk-verify"
+    cat >"${STUBBIN}/adb" <<'STUB'
+#!/bin/sh
+printf 'adb %s\n' "$*" >> "${STUB_LOG}"
+exit 0
+STUB
+    cat >"${sdk}/build-tools/34.0.0/apksigner" <<'STUB'
+#!/bin/sh
+printf 'apksigner %s\n' "$*" >> "${STUB_LOG}"
+exit "${APKSIGNER_RESULT:-0}"
+STUB
+    chmod +x "${STUBBIN}/adb" "${sdk}/build-tools/34.0.0/apksigner"
+
+    RC=0
+    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" APKSIGNER_RESULT=1 \
+        PATH="${STUBBIN}:/usr/bin:/bin" bash "${REPO_ROOT}/linux-install/assets/micsource" \
+        install-apk >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 1 "${RC}"
+    assert_not_contains "${STUB_LOG}" "adb install"
+    assert_contains "${TEST_STDERR}" "Refusing to install an APK without a valid signature."
+
+    : >"${STUB_LOG}"
+    RC=0
+    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" PATH="${STUBBIN}:/usr/bin:/bin" \
+        bash "${REPO_ROOT}/linux-install/assets/micsource" install-apk \
+        >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 0 "${RC}"
+    assert_contains "${STUB_LOG}" "adb install -r -t ${apk}"
+    end_case
+}
+
+##############################################################################
 # Case 13: non-GNOME desktop skips the extension and keeps exit 0
 ##############################################################################
 case_install_non_gnome() {
@@ -777,6 +855,8 @@ main() {
     case_install_readonly_config
     case_install_no_device
     case_install_checksum_mismatch
+    case_apk_signature_verification
+    case_cli_install_requires_valid_apk_signature
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1

@@ -49,6 +49,9 @@ root, no Android Studio. Signing is optional: without `keystore.properties`
 the APK is signed with the automatic debug key, which is fine for local use.
 If you skip the build environment, place a prebuilt APK at
 `~/.local/share/micsource/micsource-release.apk` instead.
+Installing an APK on a device also requires Android SDK Build-Tools with
+`apksigner` and Java available (from the configured SDK or on `PATH`) so
+MicSource can verify its signature before sending it to the phone.
 
 ## Installation
 
@@ -67,7 +70,7 @@ The installer will:
 1. Check for `adb` on your host; if missing, offer to download and install the official Google platform-tools bundle.
 2. Check for a JDK 17 + Android SDK build environment; if missing, offer to install a portable one (needed only to build the APK from source).
 3. Locate, build, or stage the MicSource APK.
-4. Install the APK to your connected Android device via adb and forward the `audiosource` device socket as `micsource`.
+4. Verify the APK signature, then install it to your connected Android device via adb and forward the `audiosource` device socket as `micsource`.
 5. Write `~/.config/micsource/config.ini`.
 6. Install the app-drawer launcher icon.
 7. Install the desktop control window (`micsource-app.py`) and its launcher wrapper (`micsource-gui`).
