@@ -12,10 +12,14 @@
 > became asset seeding instead — see
 > `../specs/2026-11-07-installer-assets-design.md`.
 >
-> **Later follow-up (2026-11-19):** StatusNotifierItem support was implemented
-> again from the repository assets using `Gio.bus_get_sync()` and
-> `Gio.DBusConnection.register_object()`. This is a separate implementation;
-> do not resume this plan's steps or its broken `own_name` approach.
+> **Current status (2026-11-19): unfinished and deferred.** StatusNotifierItem
+> support was implemented again from repository assets in commit `ab0614c`,
+> using `Gio.bus_get_sync()` and `Gio.DBusConnection.register_object()`. After
+> reinstalling and launching, the user confirmed the icon appears but clicking
+> it opens no menu. Debug this against a live desktop in a later cycle. The
+> user asked to focus on other plans first; do not make this the next task.
+> This is a separate implementation; do not resume this plan's stale steps or
+> its broken `own_name` approach.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

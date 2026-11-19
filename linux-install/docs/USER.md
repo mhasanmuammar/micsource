@@ -146,6 +146,7 @@ there unless you uninstall it separately).
 
 | Problem | Fix |
 |---|---|
+| Tray icon is visible, but clicking it opens no menu | Known unfinished issue in the StatusNotifier tray. It is documented for a later development cycle; use the MicSource control window or GNOME top-bar tile for controls in the meantime. |
 | Tray icon never shows "connected" | Make sure USB debugging is authorized on the phone and the screen is unlocked. The tray is opt-in: enable it from the app (**Preferences → Startup & Panel → Tray Icon**). The desktop session must provide a StatusNotifier watcher; GNOME additionally needs the **KStatusNotifier / AppIndicator shell extension** (`appindicatorsupport@rgcjonas.gmail.com`) because GNOME has no built-in StatusNotifier area. Watcher errors are reported in the toggle's toast / Activity log and `~/.local/share/micsource/tray.log`. On GNOME, the top-bar tile works without the extension. |
 | Launching "MicSource" shows a notification about PyGObject | The window needs GTK 4 + libadwaita: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` (Debian/Ubuntu) or `sudo dnf install python3-gobject` (Fedora), then launch MicSource again. |
 | No sound from the PC speakers | That is the default — the phone audio only appears as the `phone-mic` input device. Set `play_to_speakers = true` in the config (then check `paplay`/`aplay` is installed and your volume). |
