@@ -2,25 +2,25 @@
 
 > **Audit (2026-11-19):** Tasks 1–6 are marked complete based on the shipped
 > assets, current installer/docs, and implementation commits in repository
-> history. Task 7 is partially complete: its live-home install and deployed
-> file checks are now evidenced, while static lint and the service pre/post
-> comparison remain unconfirmed. The sandbox's AF_UNIX bind restriction was handled by using a
+> history. Task 7 verification is complete: local suite/lint/syntax checks,
+> live-home installation, deployed-file drift, and service/audio post-checks
+> all passed. The sandbox's AF_UNIX bind restriction was handled by using a
 > regular marker file for the uninstall-path assertion; the full suite now
 > passes 20/20 cases. Follow-up cycles implemented `--no-device` and pinned
 > platform-tools checksum verification, APK signature verification before
-> device install, and a Gio StatusNotifierItem tray. Task 7's broader
-> lint/syntax checks and live-home checks remain unconfirmed.
+> device install, and a Gio StatusNotifierItem tray. Current tray menu issue
+> is recorded as dormant, outside the active plan.
 
 > **Task 7 progress (2026-11-19):** the sandbox suite passed 20/20, the tray
 > model passed 5/5, Python asset compilation, Bash syntax, and Node syntax
 > checks passed, and deployed app/tray files match the repository assets. A
 > real-HOME install with adb stubbed completed successfully without device
 > traffic; `adb.path` was restored byte-identically. Post-run, the service was
-> active and MicSource reported `audio_seconds=3153`. The pre-run service
-> state was not captured, so that comparison remains unconfirmed.
-> `shellcheck` and `shfmt` are unavailable here (the plan's
-> `/tmp/opencode/bin` directory is absent). Do not mark Task 7 complete until
-> the missing lint checks and baseline comparison are resolved.
+> active and MicSource reported `audio_seconds=3153`. ShellCheck v0.10.0 and
+> shfmt v3.8.0 were fetched to `/tmp/opencode/bin`; all listed lint/format,
+> syntax and Node checks pass. The service's active period began at 13:32,
+> before the real-home install; it remained active afterward, with
+> `audio_seconds` advancing from 3153 to 3368. All Task 7 checks are complete.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
@@ -399,7 +399,8 @@ git commit -m "docs: document asset-based installer; mark tray plan Task 4 super
 - Consumes: everything from Tasks 1–6.
 - Produces: a green full suite, drift verified, deployed copies in sync with assets, both bug fixes live.
 
-- [ ] **Step 1: Run the full local suite**
+- [x] **Step 1: Run the full local suite** — tests, syntax, lint, format and
+  Node checks passed on 2026-11-19.
 
 ```bash
 bash linux-install/tests/test_install_sandbox.sh
@@ -432,11 +433,10 @@ PATH="/tmp/opencode/realrun-stub:$PATH" bash linux-install/install.sh </dev/null
 ```
 Notes: only `adb` is stubbed here (systemctl/gnome-extensions must be real for a real install); `</dev/null` makes any unexpected prompt take the default `N` answer; `step_pipewire` restarts `pipewire-pulse` — expected brief audio blip (documented in the spec).
 
-- [ ] **Step 4: Post-run assertions** (partial: adb.path restored byte-identically;
+- [x] **Step 4: Post-run assertions** — adb.path restored byte-identically;
   deployed app/tray match assets; both historical shell fixes are installed;
-  shell syntax passes; post-run service and audio status are healthy. The
-  pre-run service state was not captured, so the required state comparison
-  remains unconfirmed.)
+  shell syntax passes; service active period began before the install and
+  remained active; audio advanced from 3153 to 3368 seconds.
 
 ```bash
 printf '%s\n' "$ADB_BEFORE" > /tmp/opencode/adb.before && printf '%s\n' "$(cat ~/.local/share/micsource/adb.path)" > /tmp/opencode/adb.after
@@ -451,7 +451,8 @@ micsource status | grep audio_seconds                                           
 ```
 Expected: all pass. If the service was active before the run and `audio_seconds` is frozen after, restart the service (sanctioned recovery in the spec).
 
-- [ ] **Step 5: Commit any resulting changes**
+- [x] **Step 5: Commit any resulting changes** — this Task 7 progress update is
+  committed with the verification record.
 
 ```bash
 git status --short   # expect clean unless Step 2 re-seeded or Step 1 forced fixes
