@@ -5,13 +5,16 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.os.Build;
+import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
 
@@ -33,10 +36,42 @@ public class RecordService extends Service {
     private static final int DEFAULT_AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT;
 
     private Thread recorderThread;
+    private final LocalBinder binder = new LocalBinder();
+    private volatile State state = State.STOPPED;
+    private volatile StateListener stateListener;
+
+    public enum State { STOPPED, PERMISSION_NEEDED, WAITING, STREAMING, ERROR }
+
+    public interface StateListener { void onStateChanged(State state); }
+
+    public class LocalBinder extends Binder {
+        RecordService getService() { return RecordService.this; }
+    }
+
+    public State getState() { return state; }
+
+    public void setStateListener(StateListener listener) {
+        stateListener = listener;
+        if (listener != null) listener.onStateChanged(state);
+    }
+
+    void publishState(State next) {
+        state = next;
+        StateListener listener = stateListener;
+        if (listener != null) listener.onStateChanged(next);
+    }
+
+    void stopAfterFailure() {
+        publishState(State.ERROR);
+    }
 
     public static void start(Context context) {
         Intent intent = new Intent(context, RecordService.class).setAction(ACTION_RECORD);
         ContextCompat.startForegroundService(context, intent);
+    }
+
+    public static void stop(Context context) {
+        context.stopService(new Intent(context, RecordService.class));
     }
 
     @Override
@@ -64,7 +99,7 @@ public class RecordService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (Objects.equals(intent.getAction(), ACTION_STOP)) {
+        if (intent != null && Objects.equals(intent.getAction(), ACTION_STOP)) {
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -73,21 +108,42 @@ public class RecordService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            publishState(State.PERMISSION_NEEDED);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         int minBufSize = AudioRecord.getMinBufferSize(
                 DEFAULT_SAMPLE_RATE,
                 DEFAULT_CHANNEL_CONFIG,
                 DEFAULT_AUDIO_ENCODING);
 
-        AudioRecord recorder = new AudioRecord(
-                MediaRecorder.AudioSource.DEFAULT,
-                DEFAULT_SAMPLE_RATE,
-                DEFAULT_CHANNEL_CONFIG,
-                DEFAULT_AUDIO_ENCODING,
-                2 * minBufSize);
+        if (minBufSize <= 0) {
+            Log.e(App.TAG, "AudioRecord returned invalid minimum buffer size: " + minBufSize);
+            stopAfterFailure();
+            return START_NOT_STICKY;
+        }
+
+        AudioRecord recorder;
+        try {
+            recorder = new AudioRecord(
+                    MediaRecorder.AudioSource.DEFAULT,
+                    DEFAULT_SAMPLE_RATE,
+                    DEFAULT_CHANNEL_CONFIG,
+                    DEFAULT_AUDIO_ENCODING,
+                    2 * minBufSize);
+        } catch (IllegalArgumentException | SecurityException failure) {
+            Log.e(App.TAG, "Failed to construct AudioRecord", failure);
+            stopAfterFailure();
+            return START_NOT_STICKY;
+        }
 
         if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
 			Log.e(App.TAG, "Failed to initialize AudioRecord with default parameters");
-            stopSelf();
+			publishState(State.ERROR);
+            recorder.release();
             return START_NOT_STICKY;
         }
 
@@ -99,11 +155,12 @@ public class RecordService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) {
-        return null;
+        return binder;
     }
 
     @Override
     public void onDestroy() {
+        publishState(State.STOPPED);
         if (recorderThread != null) {
             recorderThread.interrupt();
 
@@ -120,6 +177,7 @@ public class RecordService extends Service {
     }
 
     protected void showNotificationListening() {
+        publishState(State.WAITING);
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .addAction(createStopAction())
                 .setContentTitle(getString(R.string.app_name))
@@ -131,6 +189,7 @@ public class RecordService extends Service {
     }
 
     protected void showNotificationEstablished() {
+        publishState(State.STREAMING);
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .addAction(createStopAction())
                 .setColor(ContextCompat.getColor(this, R.color.ic_launcher_background))

@@ -4,4 +4,22 @@
     <string name="notification_waiting">Waiting for connection…</string>
     <string name="notification_forwarding">Forwarding…</string>
     <string name="action_stop">Stop</string>
+    <string name="phone_intro">Use your phone as a microphone source for MicSource on your computer.</string>
+    <string name="action_start">Start microphone</string>
+    <string name="action_permissions">Review permissions</string>
+    <string name="permissions_status">Permissions: %1$s · %2$s</string>
+    <string name="permission_mic_granted">microphone allowed</string>
+    <string name="permission_mic_needed">microphone permission needed</string>
+    <string name="permission_notifications_granted">notifications allowed</string>
+    <string name="permission_notifications_needed">notifications permission needed</string>
+    <string name="state_format">Status: %1$s</string>
+    <string name="state_permission_needed">Allow microphone permission to start.</string>
+    <string name="state_stopped">Stopped</string>
+    <string name="state_waiting">Waiting for MicSource on your computer to connect.</string>
+    <string name="state_streaming">Microphone audio is streaming to your computer.</string>
+    <string name="state_error">MicSource hit a startup or recording error. Stop and try again.</string>
+    <string name="wireless_title">Connect your computer</string>
+    <string name="wireless_help_supported">For Wi-Fi, connect both devices to the same network. On your phone, open Developer options → Wireless debugging and choose Pair device with pairing code. Enter the temporary pairing address and code on your computer, then connect using the separate address shown on the phone. Pairing is started from the computer; MicSource does not store the code. USB debugging also works.</string>
+    <string name="wireless_help_usb">Wireless debugging pairing is available on Android 11 and newer. Connect this phone to your computer with USB and enable USB debugging in Developer options.</string>
+    <string name="action_developer_options">Open Developer options</string>
 </resources>

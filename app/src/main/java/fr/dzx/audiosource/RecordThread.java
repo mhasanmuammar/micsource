@@ -32,10 +32,15 @@ public class RecordThread extends Thread {
             serverSocket = new LocalServerSocket(SOCKET_NAME);
         } catch (IOException e) {
             Log.e(App.TAG, "LocalServerSocket (bind)", e);
+            service.stopAfterFailure();
+            recorder.release();
+            return;
         }
 
         while (!Thread.currentThread().isInterrupted()) {
             service.showNotificationListening();
+            boolean recordingFailed = false;
+            boolean recording = false;
 
             try (LocalSocket socket = serverSocket.accept()) {
                 if (Thread.currentThread().isInterrupted()) {
@@ -44,6 +49,7 @@ public class RecordThread extends Thread {
 
                 service.showNotificationEstablished();
                 recorder.startRecording();
+                recording = true;
 
                 int BUFFER_MS = 15; // Do not buffer more than BUFFER_MS milliseconds
                 byte[] buf = new byte[SAMPLE_RATE * CHANNELS * BUFFER_MS / 1000];
@@ -52,6 +58,9 @@ public class RecordThread extends Thread {
                     int r = recorder.read(buf, 0, buf.length);
 
                     if (r < 0) {
+                        Log.e(App.TAG, "AudioRecord.read failed: " + r);
+                        service.stopAfterFailure();
+                        recordingFailed = true;
                         break;
                     }
 
@@ -60,15 +69,17 @@ public class RecordThread extends Thread {
             } catch (IOException e) {
                 Log.e(App.TAG, "LocalSocket", e);
             } finally {
-                recorder.stop();
+                if (recording) recorder.stop();
             }
+            if (recordingFailed) break;
         }
 
         try {
-            serverSocket.close();
+            if (serverSocket != null) serverSocket.close();
         } catch (IOException e) {
             Log.e(App.TAG, "LocalServerSocket (close)", e);
         }
+        recorder.release();
     }
 
     public void interrupt() {

@@ -1,6 +1,6 @@
 # Android MicSource Branding, Wireless Debugging, and Phone GUI Plan
 
-**Status:** Tasks 1–2 implemented; Tasks 3–5 proposed.
+**Status:** Tasks 1–3 implemented; Tasks 4–5 proposed.
 
 > **Progress (2026-11-19):** Task 1 now routes all MicSource ADB clients through
 > port 5038 by default, stops publishing the bundle as bare `adb`, migrates
@@ -15,6 +15,15 @@
 > confirms the package, MicSource label, launcher resources, declared
 > permissions, and component export settings. Installing over an existing
 > phone build with the expected signing key remains a Task 5 device check.
+>
+> **Progress (2026-11-19):** Task 3 now keeps a native phone control screen
+> open, requests microphone/notification permission from the relevant actions,
+> refuses to start recording without microphone permission, and binds to the
+> service for waiting/streaming/error/stopped state. It includes Start/Stop,
+> Android-version-aware Wireless debugging instructions, and a Developer
+> options shortcut. The API 14-compatible AppCompat theme is retained. APK
+> build passes. Device lifecycle and permission-flow checks remain in Task 5;
+> no test phone/emulator was available in this sandbox.
 
 ## Goal
 
