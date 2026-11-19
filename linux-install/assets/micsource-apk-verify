@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Verify APK signature integrity with Android SDK Build Tools' apksigner.
+# apksigner exits non-zero on any signature ERROR; -Werr is deliberately NOT
+# used because real AGP-built APKs carry informational warnings (META-INF
+# metadata/version entries covered by the v2 scheme, not v1) that -Werr
+# escalates to a false refusal of a validly signed APK.
 set -euo pipefail
 
 if [[ "$#" -ne 1 || ! -f "$1" ]]; then
@@ -47,7 +51,7 @@ if [[ -z "${APKSIGNER}" || ! -x "${APKSIGNER}" ]]; then
     exit 1
 fi
 
-if ! "${APKSIGNER}" verify --verbose -Werr --print-certs "$1"; then
+if ! "${APKSIGNER}" verify --verbose --print-certs "$1"; then
     echo "micsource-apk-verify: APK signature verification failed: $1" >&2
     exit 1
 fi

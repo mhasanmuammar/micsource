@@ -203,7 +203,9 @@ download. Scratch dirs are `mktemp -d` under the data dir, tracked in
    APK). After the build it rescans the candidate list; stages the copy as
    `~/.local/share/micsource/micsource-release.apk`; writes `apk.path`.
 5. `step_device` — checks `adb get-state`; if a device is online, verifies the
-   APK with SDK `apksigner` (`verify --verbose -Werr --print-certs`) before
+   APK with SDK `apksigner` (`verify --verbose --print-certs`, no `-Werr` —
+   real AGP APKs emit benign META-INF warnings that `-Werr` would turn into a
+   false refusal) before
    `adb install -r -t`, then launches `fr.dzx.audiosource/.MainActivity` and
    sets up `adb forward localabstract:micsource localabstract:audiosource`.
    Reports the **real** forward result: a failed forward fails the step

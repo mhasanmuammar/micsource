@@ -684,7 +684,7 @@ STUB
     env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" PATH="/usr/bin:/bin" \
         bash "${APK_VERIFY}" "${apk}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
     assert_exit 0 "${RC}"
-    assert_contains "${STUB_LOG}" "apksigner verify --verbose -Werr --print-certs ${apk}"
+    assert_contains "${STUB_LOG}" "apksigner verify --verbose --print-certs ${apk}"
 
     RC=0
     env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" APKSIGNER_RESULT=1 \
@@ -936,6 +936,62 @@ EOF
     end_case
 }
 
+##############################################################################
+# Case 25: verifier accepts a real AGP-built APK (META-INF metadata/version
+# entries present) — the -Werr false-refusal regression
+##############################################################################
+case_apk_verify_agp_style_metadata() {
+    local title="Verifier accepts real signed APK with AGP META-INF metadata"
+    local apk_src="${REPO_ROOT}/app/build/outputs/apk/debug/app-debug.apk"
+    [[ -f "${apk_src}" ]] || apk_src="${REPO_ROOT}/app/build/outputs/apk/release/app-release.apk"
+    if [[ ! -f "${apk_src}" ]]; then
+        printf 'SKIP: %s (no build output; run ./gradlew assembleDebug first)\n' "${title}"
+        return 0
+    fi
+    local apksigner=""
+    local sdk
+    sdk="$(awk -F= '/^sdk\.dir=/{print $2}' "${REPO_ROOT}/local.properties" 2>/dev/null || true)"
+    if [[ -z "${sdk}" || ! -d "${sdk}" ]]; then
+        sdk="${HOME}/.local/share/micsource/build-env/android-sdk"
+    fi
+    apksigner="$(ls "${sdk}"/build-tools/*/apksigner 2>/dev/null | tail -n 1 || true)"
+    if [[ -z "${apksigner}" || ! -x "${apksigner}" ]]; then
+        printf 'SKIP: %s (real apksigner unavailable)\n' "${title}"
+        return 0
+    fi
+
+    start_case 25 "${title}"
+    make_sandbox
+
+    # A real AGP-built APK must be accepted: it carries informational
+    # warnings (META-INF metadata/version entries not covered by the v1
+    # scheme, though covered by the v2 whole-file signature).
+    RC=0
+    bash "${APK_VERIFY}" "${apk_src}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 0 "${RC}"
+
+    # Tampering after signing must still be refused.
+    local tampered="${SANDBOX}/tampered.apk"
+    cp "${apk_src}" "${tampered}"
+    python3 - "${tampered}" <<'PY'
+import os, sys, zipfile
+apk = sys.argv[1]
+tmp = apk + ".tmp"
+with zipfile.ZipFile(apk) as zin, zipfile.ZipFile(tmp, "w") as zout:
+    for item in zin.infolist():
+        data = zin.read(item.filename)
+        if item.filename == "AndroidManifest.xml":
+            data = b"tampered"
+        zout.writestr(item, data)
+os.replace(tmp, apk)
+PY
+    RC=0
+    bash "${APK_VERIFY}" "${tampered}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
+    assert_exit 1 "${RC}"
+    assert_contains "${TEST_STDERR}" "APK signature verification failed"
+    end_case
+}
+
 # Invoked via `trap cleanup EXIT`; shellcheck cannot see that call → false
 # positive SC2317.
 # shellcheck disable=SC2317
@@ -973,6 +1029,7 @@ main() {
     case_cli_uses_configured_adb_port
     case_uninstall_preserves_foreign_adb_link
     case_cli_rejects_system_adb_port
+    case_apk_verify_agp_style_metadata
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1
