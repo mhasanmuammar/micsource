@@ -9,6 +9,7 @@ import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TRAY = os.path.join(REPO, "linux-install", "assets", "micsource-tray.py")
+sys.path.insert(0, os.path.dirname(TRAY))
 
 
 def load_tray():

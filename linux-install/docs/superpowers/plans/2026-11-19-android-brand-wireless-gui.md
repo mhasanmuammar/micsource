@@ -1,6 +1,13 @@
 # Android MicSource Branding, Wireless Debugging, and Phone GUI Plan
 
-**Status:** Proposed; not implemented.
+**Status:** Task 1 implemented; Tasks 2–5 proposed.
+
+> **Progress (2026-11-19):** Task 1 now routes all MicSource ADB clients through
+> port 5038 by default, stops publishing the bundle as bare `adb`, migrates
+> only MicSource-owned links, and preserves foreign links. Four ADB-routing
+> unit tests and the 24-case installer suite pass. A live two-server
+> coexistence smoke test remains in Task 5, where it can run in a controlled
+> environment without competing with the user's active phone connection.
 
 ## Goal
 
@@ -90,8 +97,10 @@ message and allow a documented override rather than falling back to port
 - Add stub-backed tests asserting every ADB invocation receives the selected
   port and that install/uninstall neither overwrite nor remove a foreign
   `~/.local/bin/adb`.
-- Verify two local ADB server endpoints can coexist and that MicSource's
-  `forward`/`devices` operations use only its configured endpoint.
+- Stub-test that MicSource `get-state` and `forward` operations use only the
+  configured endpoint. Verify real server coexistence in Task 5 from a
+  controlled no-device environment; do not start a second ADB daemon beside
+  the user's active phone connection during this task.
 
 ### 2. Rebrand the Android app without changing its package identity
 

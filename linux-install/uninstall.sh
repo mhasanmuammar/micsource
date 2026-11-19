@@ -69,7 +69,7 @@ done
 data_dir_is_ours() {
     local marker
     for marker in adb.path apk.path micsource.sock micsource micsource-apk-verify \
-        micsource-tray.py micsource-monitor.py \
+        micsource-tray.py micsource-monitor.py micsource_adb.py \
         micsource-app.py micsource-gui micsource-build \
         build-env.path micsource-icon.svg micsource-release.apk \
         project.path \

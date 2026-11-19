@@ -20,8 +20,10 @@ app can use, and — if you opt in — can also play it through the speakers.
    ```
 
 5. When asked about `adb`, say **Yes** if you don't already have it installed.
-   The installer will download the official Google adb bundle for you and
-   link `adb` into `~/.local/bin` so you can also run it from a terminal.
+   The installer stores Google's platform-tools privately under
+   `~/.local/share/micsource/adb-bundle/`. MicSource uses its own local ADB
+   server port (5038); it does not replace your system `adb` or add a bundled
+   `adb` command to your `PATH`.
    Ancient tray: not needed on GNOME — the GNOME top-bar tile is the
    primary top-bar control. If you want the legacy appindicator tray
    (KDE/XFCE/other desktops), run `./install.sh --with-tray` or enable it
@@ -103,6 +105,9 @@ tray menu). Common settings:
   than one). Leave blank to use the first device.
 - `backend` — `auto` (uses `paplay`, falls back to `aplay`).
 - `adb_path` — only needed if your adb lives somewhere unusual.
+- `server_port` — MicSource's local ADB server port (default `5038`; system
+  ADB uses `5037`). Leave the default unless you need to resolve a local port
+  conflict; `5037` is reserved for the system ADB server.
 - `[audio] play_to_speakers` — `false` (default) keeps the phone audio silent
   on the PC (mic-only mode). Set `true` to also play it out loud.
 - Easier: edit these from the app — **MicSource → Preferences → Audio**
@@ -154,7 +159,7 @@ there unless you uninstall it separately).
 | No voice activity in GNOME Settings / the volume slider does nothing | The service must be running (`micsource status`); the meter only moves while the background service streams. Routing self-heals within ~5 s after the service (re)starts; `micsource stop && micsource start` then pick **MicSource (phone mic)** in the panel. |
 | Phone sound suddenly comes out of the PC speakers (without `play_to_speakers`) | The audio policy re-routed the stream; the service repairs this itself within ~5 s. If it recurs, `micsource stop && micsource start`, and re-run install.sh so `~/.config/pipewire/pipewire-pulse.conf.d/10-micsource-stream-lock.conf` is restored. |
 | Monitoring stuck at 0 seconds | Confirm RECORD_AUDIO was granted on the phone (and the app can record — check its notification says "recording"). If audio stalls after an APK reinstall, `micsource stop && micsource start` relaunches the phone app automatically; the monitor also self-recovers within ~20 s. |
-| `adb: command not found` | Re-run `./install.sh` and agree to install the adb bundle — it also symlinks `adb` into `~/.local/bin`. Make sure `~/.local/bin` is on your PATH. |
+| `adb: command not found` | Re-run `./install.sh` and agree to install the private ADB bundle. MicSource uses the selected binary directly; it does not need `adb` on your shell `PATH`. |
 | `micsource: command not found` | Add `~/.local/bin` to your PATH: `export PATH="$HOME/.local/bin:$PATH"`. |
 | Service won't start | Run `systemctl --user status micsource` and `journalctl --user -u micsource -f` for logs. |
 | Installer can't build the APK | First run of Gradle downloads dependencies and needs network. If it still fails, re-run `./install.sh` and accept the "portable build environment" prompt, check `journalctl`/the activity log in the control window, or place a prebuilt APK at `~/.local/share/micsource/micsource-release.apk`. |

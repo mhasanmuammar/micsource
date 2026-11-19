@@ -20,7 +20,7 @@ The installer forwards the device socket to the host, mapping
 
 | Component | Location | Purpose |
 |---|---|---|
-| **adb bundle** (optional) | `~/.local/share/micsource/adb-bundle/` | Official Google platform-tools, installed only if `adb` is missing on the host |
+| **adb bundle** (optional) | `~/.local/share/micsource/adb-bundle/` | Private fallback Google platform-tools, installed only if `adb` is missing on the host; never linked into the system PATH |
 | **Build environment** (optional) | `~/.local/share/micsource/build-env/` | Portable Temurin JDK 17 + Android SDK (platform 34, build-tools 34) so the APK can be built without Android Studio; also writes `local.properties` and `build-env.path` |
 | **APK** | `~/.local/share/micsource/micsource-release.apk` | Staged copy of the built Android APK |
 | **Launcher icon** | `~/.local/share/applications/micsource.desktop` | App-drawer entry (opens the control window) |
@@ -39,7 +39,7 @@ The installer forwards the device socket to the host, mapping
 - Python 3 with PyGObject (`gi.repository.Gtk`) for the control window. The tray uses PyGObject's Gio/GLib bindings and the desktop session's StatusNotifier watcher; it does not need Gtk 3 or AppIndicator client packages. GNOME needs a StatusNotifier/AppIndicator shell extension to display the tray icon; the MicSource top-bar tile is available without it.
 - `paplay` (preferred) or `aplay` for audio playback
 - `pactl` (PulseAudio/PipeWire, installed by default on desktop Linux) for the virtual microphone
-- `adb` — detected automatically; if absent you will be prompted to install the official adb bundle (downloaded to `~/.local/share/micsource/adb-bundle/` and linked as `~/.local/bin/adb`)
+- `adb` — detected automatically; if absent you will be prompted to install the official adb bundle under `~/.local/share/micsource/adb-bundle/`. MicSource keeps it private and uses its own local ADB server port (`5038`), separate from the system server (`5037`).
 - An Android device with USB debugging authorized
 
 Java + Gradle (JDK 17) and an Android SDK are only needed if you want the
@@ -67,7 +67,7 @@ Device setup can be done later with `micsource install-apk`.
 
 The installer will:
 
-1. Check for `adb` on your host; if missing, offer to download and install the official Google platform-tools bundle.
+1. Check for `adb` on your host; if missing, offer to download the official Google platform-tools bundle into MicSource's private data directory.
 2. Check for a JDK 17 + Android SDK build environment; if missing, offer to install a portable one (needed only to build the APK from source).
 3. Locate, build, or stage the MicSource APK.
 4. Verify the APK signature, then install it to your connected Android device via adb and forward the `audiosource` device socket as `micsource`.
@@ -140,7 +140,7 @@ systemctl --user status micsource      # check status
 journalctl --user -u micsource -f      # view logs
 ```
 
-**Config:** edit `~/.config/micsource/config.ini` to set `adb_path`, `serial`
+**Config:** edit `~/.config/micsource/config.ini` to set `adb_path`, `server_port`, `serial`
 (target device serial), or the host socket name (`host_socket_name`). The
 `[audio]` section controls what happens to the phone audio:
 

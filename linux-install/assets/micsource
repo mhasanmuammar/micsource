@@ -90,6 +90,36 @@ resolve_adb() {
     command -v adb || true
 }
 
+resolve_adb_server_port() {
+    local port="5038"
+    if [[ -f "${CONFIG_DIR}/config.ini" ]]; then
+        port="$(awk -F= '/^[[:space:]]*server_port[[:space:]]*=/ {sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit}' \
+            "${CONFIG_DIR}/config.ini" | head -n 1)"
+        port="${port:-5038}"
+    fi
+    if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+        err "Invalid [adb] server_port '${port}'; 5037 is reserved for system ADB, choose another port from 1024-65535."
+        return 1
+    fi
+    port=$((10#${port}))
+    if ((port < 1024 || port > 65535 || port == 5037)); then
+        err "Invalid [adb] server_port '${port}'; 5037 is reserved for system ADB, choose another port from 1024-65535."
+        return 1
+    fi
+    printf '%s\n' "${port}"
+}
+
+adb_run() {
+    local adb_bin adb_port
+    adb_bin="$(resolve_adb)"
+    if [[ -z "${adb_bin}" ]]; then
+        err "adb not found; run install.sh to install the private bundle."
+        return 127
+    fi
+    adb_port="$(resolve_adb_server_port)" || return 2
+    "${adb_bin}" -P "${adb_port}" "$@"
+}
+
 service_start() {
     if have_cmd systemctl; then
         if [[ ! -f "${SYSTEMD_UNIT}" ]]; then
@@ -167,9 +197,10 @@ except Exception:
         info "adb: not found; run install.sh to install the adb bundle"
         return 0
     fi
-    state="$("$adb_bin" get-state 2>/dev/null || true)"
+    resolve_adb_server_port >/dev/null || return 2
+    state="$(adb_run get-state || true)"
     info "adb device state: ${state:-none}"
-    forward_list="$("$adb_bin" forward --list 2>/dev/null || true)"
+    forward_list="$(adb_run forward --list || true)"
     if [[ "$forward_list" == *localabstract:"${HOST_SOCKET}"* ]]; then
         info "socket forward: active (localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET})"
     else
@@ -222,12 +253,13 @@ device_install() {
         info "Place a prebuilt APK there (see docs/USER.md) or re-run install.sh after building."
         exit 1
     fi
+    resolve_adb_server_port >/dev/null || exit 2
     if ! "${DATA_DIR}/micsource-apk-verify" "${APK_STAGED}"; then
         err "Refusing to install an APK without a valid signature."
         exit 1
     fi
     local install_out=""
-    if ! install_out="$("$adb_bin" install -r -t "${APK_STAGED}" 2>&1)"; then
+    if ! install_out="$(adb_run install -r -t "${APK_STAGED}" 2>&1)"; then
         if [[ "$install_out" == *INSTALL_FAILED_UPDATE_INCOMPATIBLE* ]]; then
             err "The device already has a differently-signed ${ANDROID_PKG}"
             err "(e.g. the upstream release build); our APK cannot update it."
@@ -238,11 +270,11 @@ device_install() {
             read -r ans || true
             case "$ans" in
             y | Y | yes)
-                if ! "$adb_bin" uninstall "${ANDROID_PKG}"; then
+                if ! adb_run uninstall "${ANDROID_PKG}"; then
                     err "Could not uninstall the existing app."
                     exit 1
                 fi
-                if ! "$adb_bin" install -r -t "${APK_STAGED}"; then
+                if ! adb_run install -r -t "${APK_STAGED}"; then
                     err "adb install failed even after uninstall."
                     exit 1
                 fi
@@ -258,10 +290,10 @@ device_install() {
             exit 1
         fi
     fi
-    "$adb_bin" shell am force-stop "${ANDROID_PKG}" >/dev/null 2>&1 || true
-    "$adb_bin" shell am start -n "${ANDROID_PKG}/.MainActivity" >/dev/null 2>&1 || true
-    "$adb_bin" forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
-    if "$adb_bin" forward "localabstract:${HOST_SOCKET}" "localabstract:${DEVICE_SOCKET}"; then
+    adb_run shell am force-stop "${ANDROID_PKG}" >/dev/null 2>&1 || true
+    adb_run shell am start -n "${ANDROID_PKG}/.MainActivity" >/dev/null 2>&1 || true
+    adb_run forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
+    if adb_run forward "localabstract:${HOST_SOCKET}" "localabstract:${DEVICE_SOCKET}"; then
         info "Forward active: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"
     else
         err "Could not create the socket forward (app not running?)."

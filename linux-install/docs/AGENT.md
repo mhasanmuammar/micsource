@@ -9,7 +9,7 @@ Everything host-side is named **micsource** / **MicSource**:
 
 - Application ID: `micsource`
 - Dirs: `~/.config/micsource`, `~/.local/share/micsource`
-- Scripts: `micsource-app.py`, `micsource-tray.py`, `micsource-monitor.py`, `micsource-gui` (installed from `linux-install/assets/`)
+- Scripts: `micsource-app.py`, `micsource-tray.py`, `micsource-monitor.py`, `micsource_adb.py`, `micsource-gui` (installed from `linux-install/assets/`)
 - Desktop file: `micsource.desktop`, desktop name "MicSource"
 - systemd unit: `micsource.service`
 - CLI: `~/.local/share/micsource/micsource`, symlinked to `~/.local/bin/micsource`
@@ -126,20 +126,22 @@ failure or skip is recorded, but the exit stays 0.
 download. Scratch dirs are `mktemp -d` under the data dir, tracked in
 `TMP_DIRS`, and removed by an `EXIT` trap on success, failure, or interrupt.
 
-1. `step_assets` — copies the seven payload files (`micsource`,
+1. `step_assets` — copies the payload files (`micsource`,
    `micsource-gui`, `micsource-build`, `micsource-apk-verify`, `micsource-app.py`,
-   `micsource-tray.py`, `micsource-monitor.py`) from `assets/` into
+   `micsource-tray.py`, `micsource-monitor.py`, `micsource_adb.py`) from `assets/` into
    `~/.local/share/micsource/`, then `chmod 755`s the entry points. A
    missing or unreadable asset fails the step loudly. Also writes
    `${DATA_DIR}/project.path` (the checkout root) for `micsource-build`.
    `assets/gnome/` is deliberately not copied here (step 11).
-2. `step_adb` — detects `adb` (PATH or bundled). If missing, prompts to download
+2. `step_adb` — removes a legacy MicSource-owned `~/.local/bin/adb` link,
+   detects `adb` (PATH or bundled), then records the selected absolute path in
+   `adb.path`. If missing, prompts to download
    pinned Google platform-tools 37.0.1 into `~/.local/share/micsource/adb-bundle/`.
-   Writes the resolved binary path to `adb.path` in both branches (found / bundle
-   installed). After installing the bundle it also symlinks
-   `~/.local/bin/adb` → bundled adb (guarded; never replaces an existing
-   `~/.local/bin/adb`) so `adb` works in terminals without manual PATH edits;
-   when `~/.local/bin` is not on PATH it prints the export line instead.
+   MicSource never creates a new bare `adb` command or changes global PATH.
+   It uses the isolated ADB server port in `[adb] server_port` (default 5038;
+   5037 is reserved for the system ADB server). A foreign
+   `~/.local/bin/adb` link/file is left untouched. Uninstall still removes an
+   old MicSource link only when it resolves to the bundled binary.
    Requires `curl`/`wget`, `unzip`, `sha256sum`, and `sha1sum`; verifies the
    pinned SHA-256 and Google SDK metadata SHA-1 before extraction, and cleans
    up partial downloads on failure.
@@ -491,7 +493,9 @@ for this issue unless the user explicitly brings it back. See
 - The tray has **no audio pump** — no `_vmic_*`, `_pump` or `paplay` code at
   all; monitoring is the background service's job.
 - Reads `adb_path` / `serial` / `host_socket_name` from `config.ini`; falls
-  back to `adb.path` then `adb` on PATH.
+  back to `adb.path` then `adb` on PATH. All tray ADB requests use the
+  `micsource_adb.py` argv builder and configured private server port; no menu
+  behavior is changed by this routing.
 
 ## CLI dispatcher (`micsource`)
 
@@ -506,7 +510,8 @@ Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `build-apk`,
   signature-conflict recovery prompt call `warn`/`ask` and used to die with
   `command not found` (exit 127).
 - `resolve_adb()` precedence: `adb_path` from `config.ini` → `adb.path` file →
-  bundled `adb-bundle/platform-tools/adb` → `adb` on PATH.
+  bundled `adb-bundle/platform-tools/adb` → `adb` on PATH. Every CLI request
+  also passes `-P <server_port>` (default 5038) through `adb_run()`.
 - `status` queries the control socket (`micsource.sock`) with the same
   `status` protocol as the monitor (`device=X forward=Y audio_seconds=N
   [name=<model>]`, recv buffer 256 bytes so the longer line is not
@@ -597,7 +602,7 @@ Commands: `start`, `stop`, `status`, `run`, `tray`, `window`, `build-apk`,
 ## Config file (`config.ini`)
 
 INI format with sections `[general]`, `[adb]`, `[device]`, `[socket]`,
-`[audio]`. Keys: `app_name`, `android_package`, `adb_path`, `serial`,
+`[audio]`. Keys: `app_name`, `android_package`, `adb_path`, `server_port`, `serial`,
 `host_socket_name` (default `micsource`), `device_socket_name` (default
 `audiosource`), `backend`, `[audio] play_to_speakers` (default `false` —
 no speaker playback unless the user opts in), `[audio] virtual_mic`

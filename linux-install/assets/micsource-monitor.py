@@ -20,6 +20,13 @@ import sys
 import threading
 import time
 
+from micsource_adb import (
+    DEFAULT_SERVER_PORT,
+    command as adb_command,
+    server_port_error,
+    validate_server_port,
+)
+
 DATA_DIR = os.path.expanduser("~/.local/share/micsource")
 CONFIG_DIR = os.path.expanduser("~/.config/micsource")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
@@ -41,6 +48,7 @@ _level_update = 0.0    # time.time() of the last sample-consuming update
 _level_lock = threading.Lock()
 
 ADB_CMD = "adb"
+ADB_SERVER_PORT = DEFAULT_SERVER_PORT
 SERIAL = None
 
 # Device name lookup cache
@@ -79,14 +87,16 @@ def device_name():
 
 
 def _load_config():
-    global ADB_CMD, SERIAL, HOST_SOCKET
+    global ADB_CMD, ADB_SERVER_PORT, SERIAL, HOST_SOCKET
     adb_path = ""
+    server_port = str(DEFAULT_SERVER_PORT)
     serial = ""
     host_socket = ""
     parser = configparser.ConfigParser()
     try:
         parser.read(CONFIG_PATH)
         adb_path = parser.get("adb", "adb_path", fallback="").strip()
+        server_port = parser.get("adb", "server_port", fallback=server_port).strip()
         serial = parser.get("device", "serial", fallback="").strip()
         host_socket = parser.get("socket", "host_socket_name", fallback="").strip()
     except Exception:
@@ -98,18 +108,24 @@ def _load_config():
         except OSError:
             adb_path = ""
     ADB_CMD = adb_path or "adb"
+    try:
+        ADB_SERVER_PORT = validate_server_port(server_port)
+    except ValueError as exc:
+        ADB_SERVER_PORT = DEFAULT_SERVER_PORT
+        _log(f"invalid [adb] server_port ({exc}); using {DEFAULT_SERVER_PORT}")
     SERIAL = serial or None
     HOST_SOCKET = host_socket or DEFAULT_HOST_SOCKET
 
 
 def run_adb(args, timeout=6):
     """Run adb; return (rc, stdout, stderr). Never raises."""
-    cmd = [ADB_CMD]
-    if SERIAL:
-        cmd += ["-s", SERIAL]
-    cmd += list(args)
+    cmd = adb_command(ADB_CMD, ADB_SERVER_PORT, args, SERIAL)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode:
+            port_error = server_port_error(ADB_SERVER_PORT, proc.stderr)
+            if port_error:
+                _log(port_error)
         return proc.returncode, proc.stdout, proc.stderr
     except FileNotFoundError:
         return 127, "", f"adb not found: {ADB_CMD}"

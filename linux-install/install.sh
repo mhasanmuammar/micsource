@@ -218,7 +218,7 @@ step_sanity() {
 step_assets() {
     local f failed=0
     for f in micsource micsource-gui micsource-build micsource-apk-verify \
-        micsource-app.py micsource-tray.py micsource-monitor.py; do
+        micsource-app.py micsource-tray.py micsource-monitor.py micsource_adb.py; do
         if [[ ! -f "${INSTALL_DIR}/assets/${f}" ]]; then
             err "Missing installer asset: ${INSTALL_DIR}/assets/${f}"
             failed=1
@@ -235,7 +235,8 @@ step_assets() {
     chmod 755 "${DATA_DIR}/micsource" "${DATA_DIR}/micsource-gui" \
         "${DATA_DIR}/micsource-build" "${DATA_DIR}/micsource-apk-verify" \
         "${DATA_DIR}/micsource-app.py" \
-        "${DATA_DIR}/micsource-tray.py" "${DATA_DIR}/micsource-monitor.py" || {
+        "${DATA_DIR}/micsource-tray.py" "${DATA_DIR}/micsource-monitor.py" \
+        "${DATA_DIR}/micsource_adb.py" || {
         err "Failed to make the payload files executable in ${DATA_DIR}"
         return 1
     }
@@ -251,7 +252,18 @@ step_adb() {
         info "--no-device: skipping adb setup."
         return 2
     fi
-    local adb_bin=""
+    local adb_bin="" adb_port
+
+    # Migrate only a MicSource-owned link from older installs. This runs
+    # before command -v so that a later system adb can be discovered.
+    if [[ -L "${ADB_LINK}" ]] &&
+        [[ "$(readlink -f "${ADB_LINK}")" == "$(readlink -f "${ADB_BUNDLE_DIR}/platform-tools/adb")" ]]; then
+        if ! rm -f -- "${ADB_LINK}"; then
+            err "Could not remove legacy MicSource adb link: ${ADB_LINK}"
+            return 1
+        fi
+        ok "Removed legacy MicSource adb link: ${ADB_LINK}"
+    fi
 
     if have_cmd adb; then
         adb_bin="$(command -v adb)"
@@ -309,29 +321,29 @@ step_adb() {
         rm -rf "${scratch}" # success: drop the scratch now (the trap is the backstop)
         adb_bin="${ADB_BUNDLE_DIR}/platform-tools/adb"
         ok "adb bundle installed: ${adb_bin}"
-        if [[ -L "${ADB_LINK}" ]]; then
-            if [[ "$(readlink -f "${ADB_LINK}")" == "$(readlink -f "${adb_bin}")" ]]; then
-                ok "adb symlink already in place."
-            else
-                warn "${ADB_LINK} exists pointing elsewhere; leaving it (use ${adb_bin})."
-            fi
-        elif [[ -e "${ADB_LINK}" ]]; then
-            warn "${ADB_LINK} exists and is not a symlink; leaving it."
-        else
-            ln -s "${adb_bin}" "${ADB_LINK}"
-            ok "Linked ${ADB_LINK} -> ${adb_bin}"
-        fi
     fi
 
+    adb_port="$(read_adb_server_port)" || return 1
     printf '%s\n' "${adb_bin}" >"${ADB_PATH_FILE}"
+    info "MicSource ADB server port: ${adb_port}"
+}
 
-    case ":${PATH}:" in
-    *:"${HOME}/.local/bin":*) : ;;
-    *)
-        warn "${HOME}/.local/bin is not on your PATH."
-        info "Add it permanently:  export PATH=\"${HOME}/.local/bin:\$PATH\""
-        ;;
-    esac
+read_adb_server_port() {
+    local port="5038"
+    if [[ -f "${CONFIG_PATH}" ]]; then
+        port="$(awk -F= '/^[[:space:]]*server_port[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "${CONFIG_PATH}")"
+        port="${port:-5038}"
+    fi
+    if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+        err "Invalid [adb] server_port '${port}'; 5037 is reserved for system ADB, choose another port from 1024-65535."
+        return 1
+    fi
+    port=$((10#${port}))
+    if ((port < 1024 || port > 65535 || port == 5037)); then
+        err "Invalid [adb] server_port '${port}'; 5037 is reserved for system ADB, choose another port from 1024-65535."
+        return 1
+    fi
+    printf '%s\n' "${port}"
 }
 
 env_set_if_portable() {
@@ -513,8 +525,15 @@ step_device() {
         return 2
     fi
 
-    local state
-    state="$("${adb_bin}" get-state 2>/dev/null || true)"
+    local state adb_port
+    adb_port="$(read_adb_server_port)" || return 1
+    state="$("${adb_bin}" -P "${adb_port}" get-state 2>&1 || true)"
+    if [[ "${state,,}" == *"cannot bind"* ||
+        "${state,,}" == *"address already in use"* ||
+        "${state,,}" == *"failed to start daemon"* ]]; then
+        err "MicSource ADB server port ${adb_port} is unavailable: ${state}"
+        return 1
+    fi
     if [[ "${state}" != "device" ]]; then
         warn "No Android device online (state: ${state:-none})."
         info "Connect the phone, enable USB debugging, authorize the host, then run:"
@@ -526,14 +545,14 @@ step_device() {
         return 1
     fi
     info "Installing APK on the device..."
-    if "${adb_bin}" install -r -t "${STAGED_APK}"; then
+    if "${adb_bin}" -P "${adb_port}" install -r -t "${STAGED_APK}"; then
         ok "APK installed on device."
     else
         warn "adb install failed; the device may refuse unknown signers."
     fi
-    "${adb_bin}" shell am start -n "${ANDROID_PKG}/.MainActivity" \
+    "${adb_bin}" -P "${adb_port}" shell am start -n "${ANDROID_PKG}/.MainActivity" \
         >/dev/null 2>&1 || true
-    if "${adb_bin}" forward "localabstract:${HOST_SOCKET}" \
+    if "${adb_bin}" -P "${adb_port}" forward "localabstract:${HOST_SOCKET}" \
         "localabstract:${DEVICE_SOCKET}" >/dev/null 2>&1; then
         ok "adb forward set: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"
         return 0
@@ -563,6 +582,8 @@ android_package = fr.dzx.audiosource
 [adb]
 # Path to adb binary (auto-detected). Leave empty to use PATH adb.
 adb_path =
+# Isolated local ADB server port (system ADB defaults to 5037).
+server_port = 5038
 
 [device]
 # Serial of the target device (empty = first device).

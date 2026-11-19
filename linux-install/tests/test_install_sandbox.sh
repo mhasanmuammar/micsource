@@ -35,6 +35,7 @@ TEST_STDOUT=""
 TEST_STDERR=""
 COMBINED=""
 TEST_XDG_DESKTOP=""
+TEST_PATH=""
 RC=0
 
 SAVED_SANDBOX=""
@@ -44,6 +45,7 @@ SAVED_TEST_STDOUT=""
 SAVED_TEST_STDERR=""
 SAVED_COMBINED=""
 SAVED_TEST_XDG_DESKTOP=""
+SAVED_TEST_PATH=""
 
 SANDBOXES=()
 
@@ -153,6 +155,7 @@ make_sandbox() {
     TEST_STDERR="${SANDBOX}/stderr.txt"
     COMBINED="${SANDBOX}/combined.txt"
     TEST_XDG_DESKTOP=""
+    TEST_PATH="${STUBBIN}:/usr/bin:/bin"
     mkdir -p "${SANDBOX_HOME}" "${STUBBIN}"
     : >"${STUB_LOG}"
 
@@ -198,7 +201,7 @@ run_script() { # run_script <stdin-bytes> <script> [args...]
             ANDROID_HOME="" \
             NO_COLOR="" \
             STUB_LOG="${STUB_LOG}" \
-            PATH="${STUBBIN}:/usr/bin:/bin" \
+            PATH="${TEST_PATH}" \
             bash "$@" \
             >"${TEST_STDOUT}" 2>"${TEST_STDERR}" ||
         RC=$?
@@ -219,6 +222,7 @@ save_sandbox() {
     SAVED_TEST_STDERR="${TEST_STDERR}"
     SAVED_COMBINED="${COMBINED}"
     SAVED_TEST_XDG_DESKTOP="${TEST_XDG_DESKTOP}"
+    SAVED_TEST_PATH="${TEST_PATH}"
 }
 
 restore_sandbox() {
@@ -230,6 +234,7 @@ restore_sandbox() {
     TEST_STDERR="${SAVED_TEST_STDERR}"
     COMBINED="${SAVED_COMBINED}"
     TEST_XDG_DESKTOP="${SAVED_TEST_XDG_DESKTOP}"
+    TEST_PATH="${SAVED_TEST_PATH}"
     derive_test_paths
 }
 
@@ -347,7 +352,7 @@ case_uninstall_idempotent() {
 # Case 5: ownership guards keep foreign content in place
 ##############################################################################
 case_uninstall_ownership_guards() {
-    start_case 5 "uninstall leaves foreign data dir, config dir, and CLI symlink"
+    start_case 5 "uninstall preserves foreign data/config dirs and CLI/adb links"
     make_sandbox
     # (a) data dir containing only foreign content
     mkdir -p "${TEST_DATA_DIR}"
@@ -355,15 +360,20 @@ case_uninstall_ownership_guards() {
     # (b) config dir without config.ini
     mkdir -p "${TEST_CONFIG_DIR}"
     printf 'unrelated\n' >"${TEST_CONFIG_DIR}/other.txt"
-    # (c) CLI symlink pointing somewhere else entirely
+    # (c) CLI and adb symlinks pointing somewhere else entirely
     mkdir -p "${TEST_BIN_DIR}"
     printf '#!/bin/sh\nexit 0\n' >"${SANDBOX}/elsewhere-target"
     ln -s "${SANDBOX}/elsewhere-target" "${TEST_CLI_LINK}"
+    ln -s "${SANDBOX}/elsewhere-target" "${TEST_ADB_LINK}"
     run_script $'y\n' "${UNINSTALL}"
     assert_exit 0 "${RC}"
     assert_file "${TEST_DATA_DIR}"
     assert_file "${TEST_CONFIG_DIR}"
     assert_file "${TEST_CLI_LINK}"
+    assert_file "${TEST_ADB_LINK}"
+    if [[ "$(readlink "${TEST_ADB_LINK}")" != "${SANDBOX}/elsewhere-target" ]]; then
+        fail_case "uninstall changed foreign adb symlink target"
+    fi
     end_case
 }
 
@@ -384,7 +394,7 @@ case_install_happy_path() {
     assert_file "${TEST_ICON}"
     local f
     for f in micsource micsource-gui micsource-build micsource-apk-verify \
-        micsource-app.py micsource-tray.py micsource-monitor.py; do
+        micsource-app.py micsource-tray.py micsource-monitor.py micsource_adb.py; do
         assert_file "${TEST_DATA_DIR}/${f}"
         if [[ ! -x "${TEST_DATA_DIR}/${f}" ]]; then
             fail_case "expected executable payload: ${TEST_DATA_DIR}/${f}"
@@ -398,13 +408,15 @@ case_install_happy_path() {
     fi
     assert_file "${TEST_EXT_METADATA}"
     assert_gone "${TEST_DATA_DIR}/gnome"
+    assert_gone "${TEST_ADB_LINK}"
+    assert_contains "${TEST_CONFIG_INI}" "server_port = 5038"
     assert_contains "${TEST_STDOUT}" "complete"
     assert_no_esc "${TEST_STDOUT}"
     # The device step must only probe state, never install/forward/shell
     # (Review Focus 2: no traffic may reach the connected phone).
-    assert_contains "${STUB_LOG}" "adb get-state"
+    assert_contains "${STUB_LOG}" "adb -P 5038 get-state"
     local bad_adb
-    bad_adb="$(grep '^adb ' "${STUB_LOG}" | grep -v '^adb get-state' || true)"
+    bad_adb="$(grep '^adb ' "${STUB_LOG}" | grep -v '^adb -P 5038 get-state' || true)"
     if [[ -n "${bad_adb}" ]]; then
         fail_case "stub.log records adb activity beyond get-state: ${bad_adb}"
     fi
@@ -414,6 +426,7 @@ case_install_happy_path() {
     assert_matches "${TEST_DATA_DIR}/micsource" '^warn\(\)'
     assert_matches "${TEST_DATA_DIR}/micsource" '^ask\(\)'
     assert_matches "${TEST_DATA_DIR}/micsource-build" 'project\.path'
+    assert_matches "${TEST_DATA_DIR}/micsource_adb.py" 'def validate_server_port'
     save_sandbox
     end_case
 }
@@ -573,7 +586,7 @@ STUB
     assert_contains "${STUB_LOG}" "curl "
     # No command outside the curated dir may have run: a real adb would have
     # logged "adb ..." through the stubbin stub, which is not on this PATH.
-    assert_not_contains "${STUB_LOG}" "adb get-state"
+    assert_not_contains "${STUB_LOG}" "adb -P 5038 get-state"
     local leftovers
     leftovers="$(find "${TEST_DATA_DIR}" -maxdepth 1 \( -name '.dl.*' -o -name '.platform-tools*' \) || true)"
     if [[ -n "${leftovers}" ]]; then
@@ -722,7 +735,7 @@ STUB
         bash "${REPO_ROOT}/linux-install/assets/micsource" install-apk \
         >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
     assert_exit 0 "${RC}"
-    assert_contains "${STUB_LOG}" "adb install -r -t ${apk}"
+    assert_contains "${STUB_LOG}" "adb -P 5038 install -r -t ${apk}"
     end_case
 }
 
@@ -824,6 +837,105 @@ case_install_no_device() {
     end_case
 }
 
+##############################################################################
+# Case 21: a legacy MicSource adb PATH link is removed and not recreated
+##############################################################################
+case_install_migrates_adb_link() {
+    start_case 21 "install removes legacy bundled adb PATH link without recreating it"
+    make_sandbox
+    mkdir -p "${TEST_ADB_BUNDLE_DIR}/platform-tools" "${TEST_BIN_DIR}"
+    cp "${STUBBIN}/adb" "${TEST_ADB_BUNDLE}"
+    chmod 755 "${TEST_ADB_BUNDLE}"
+    ln -s "${TEST_ADB_BUNDLE}" "${TEST_ADB_LINK}"
+    mv "${STUBBIN}/adb" "${STUBBIN}/adb.disabled"
+    ln -s "$(command -v python3)" "${STUBBIN}/python3"
+    TEST_PATH="${STUBBIN}:/bin"
+    if PATH="${TEST_PATH}" command -v adb >/dev/null 2>&1; then
+        info "Skipping isolated bundle fixture because /bin also provides adb."
+        end_case
+        return
+    fi
+
+    run_script $'n\nn\n' "${INSTALL}"
+    assert_exit 0 "${RC}"
+    assert_gone "${TEST_ADB_LINK}"
+    assert_contains "${TEST_DATA_DIR}/adb.path" "${TEST_ADB_BUNDLE}"
+    assert_contains "${STUB_LOG}" "adb -P 5038 get-state"
+    end_case
+}
+
+##############################################################################
+# Case 23: uninstall removes an owned link but preserves a foreign adb link
+##############################################################################
+case_uninstall_preserves_foreign_adb_link() {
+    start_case 23 "uninstall preserves foreign adb symlink while removing MicSource"
+    make_sandbox
+    make_full_fixture
+    rm -f "${TEST_ADB_LINK}"
+    printf '#!/bin/sh\nexit 0\n' >"${SANDBOX}/foreign-adb"
+    ln -s "${SANDBOX}/foreign-adb" "${TEST_ADB_LINK}"
+
+    run_script $'y\ny\n' "${UNINSTALL}"
+    assert_exit 0 "${RC}"
+    assert_gone "${TEST_DATA_DIR}"
+    assert_file "${TEST_ADB_LINK}"
+    if [[ "$(readlink "${TEST_ADB_LINK}")" != "${SANDBOX}/foreign-adb" ]]; then
+        fail_case "uninstall changed foreign adb symlink target"
+    fi
+    end_case
+}
+
+##############################################################################
+# Case 22: CLI uses the configured private ADB port for every request
+##############################################################################
+case_cli_uses_configured_adb_port() {
+    start_case 22 "CLI routes all adb requests through configured private port"
+    make_sandbox
+    mkdir -p "${TEST_DATA_DIR}" "${TEST_CONFIG_DIR}"
+    cp "${REPO_ROOT}/linux-install/assets/micsource" "${TEST_DATA_DIR}/micsource"
+    chmod 755 "${TEST_DATA_DIR}/micsource"
+    cat >"${TEST_CONFIG_INI}" <<EOF
+[adb]
+adb_path = ${STUBBIN}/adb
+server_port = 5042
+EOF
+
+    run_script "" "${REPO_ROOT}/linux-install/assets/micsource" status
+    assert_exit 0 "${RC}"
+    assert_contains "${STUB_LOG}" "adb -P 5042 get-state"
+    assert_contains "${STUB_LOG}" "adb -P 5042 forward --list"
+    local bad_adb
+    bad_adb="$(grep '^adb ' "${STUB_LOG}" | grep -v '^adb -P 5042 ' || true)"
+    if [[ -n "${bad_adb}" ]]; then
+        fail_case "CLI invoked adb outside configured port 5042: ${bad_adb}"
+    fi
+    end_case
+}
+
+##############################################################################
+# Case 24: CLI refuses the system ADB server port
+##############################################################################
+case_cli_rejects_system_adb_port() {
+    start_case 24 "CLI refuses port 5037 instead of sharing system ADB server"
+    make_sandbox
+    mkdir -p "${TEST_DATA_DIR}" "${TEST_CONFIG_DIR}"
+    cp "${REPO_ROOT}/linux-install/assets/micsource" "${TEST_DATA_DIR}/micsource"
+    chmod 755 "${TEST_DATA_DIR}/micsource"
+    cat >"${TEST_CONFIG_INI}" <<EOF
+[adb]
+adb_path = ${STUBBIN}/adb
+server_port = 5037
+EOF
+
+    run_script "" "${REPO_ROOT}/linux-install/assets/micsource" status
+    assert_exit 2 "${RC}"
+    assert_contains "${TEST_STDERR}" "reserved for system ADB"
+    if grep -q '^adb ' "${STUB_LOG}"; then
+        fail_case "CLI invoked adb with reserved port 5037"
+    fi
+    end_case
+}
+
 # Invoked via `trap cleanup EXIT`; shellcheck cannot see that call → false
 # positive SC2317.
 # shellcheck disable=SC2317
@@ -857,6 +969,10 @@ main() {
     case_install_checksum_mismatch
     case_apk_signature_verification
     case_cli_install_requires_valid_apk_signature
+    case_install_migrates_adb_link
+    case_cli_uses_configured_adb_port
+    case_uninstall_preserves_foreign_adb_link
+    case_cli_rejects_system_adb_port
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1
