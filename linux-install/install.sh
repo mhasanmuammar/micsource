@@ -536,7 +536,12 @@ step_device() {
     fi
     if [[ "${state}" != "device" ]]; then
         warn "No Android device online (state: ${state:-none})."
-        info "Connect the phone, enable USB debugging, authorize the host, then run:"
+        info "USB: connect the phone, enable USB debugging, authorize this host."
+        info "Wi-Fi (Android 11+): phone and PC on the same network, then use"
+        info "Wireless debugging (Developer options) from the control window or:"
+        info "  micsource wireless-pair IP:PORT      # code shown by the phone"
+        info "  micsource wireless-connect IP:PORT    # separate connect endpoint"
+        info "Then run:"
         info "  micsource install-apk   # install + forward"
         return 2
     fi
