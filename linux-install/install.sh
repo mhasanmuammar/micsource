@@ -346,6 +346,16 @@ read_adb_server_port() {
     printf '%s\n' "${port}"
 }
 
+read_device_serial() {
+    # USB and Wireless debugging can both be online for the same phone;
+    # without -s every adb command fails with "more than one device/emulator".
+    local serial=""
+    if [[ -f "${CONFIG_PATH}" ]]; then
+        serial="$(awk -F= '/^[[:space:]]*serial[[:space:]]*=/ {sub(/^[^=]*=[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); print; exit}' "${CONFIG_PATH}")"
+    fi
+    printf '%s\n' "${serial}"
+}
+
 env_set_if_portable() {
     # Source the installer-managed JDK/SDK so gradle sees them.
     if [[ -f "${ENV_PATH_FILE}" ]]; then
@@ -525,9 +535,14 @@ step_device() {
         return 2
     fi
 
-    local state adb_port
+    local state adb_port serial
+    serial="$(read_device_serial)"
     adb_port="$(read_adb_server_port)" || return 1
-    state="$("${adb_bin}" -P "${adb_port}" get-state 2>&1 || true)"
+    local adb_target=()
+    if [[ -n "${serial}" ]]; then
+        adb_target=(-s "${serial}")
+    fi
+    state="$("${adb_bin}" -P "${adb_port}" "${adb_target[@]}" get-state 2>&1 || true)"
     if [[ "${state,,}" == *"cannot bind"* ||
         "${state,,}" == *"address already in use"* ||
         "${state,,}" == *"failed to start daemon"* ]]; then
@@ -535,7 +550,18 @@ step_device() {
         return 1
     fi
     if [[ "${state}" != "device" ]]; then
+        if [[ "${state,,}" == *"more than one"* ]]; then
+            warn "More than one Android device/transport is online."
+            info "Select the target once with:"
+            info "  micsource devices          # list serials"
+            info "  micsource device-select SERIAL"
+            return 2
+        fi
         warn "No Android device online (state: ${state:-none})."
+        if [[ -n "${serial}" ]]; then
+            info "The configured device (${serial}) is offline. Pick another with"
+            info "  micsource devices && micsource device-select SERIAL"
+        fi
         info "USB: connect the phone, enable USB debugging, authorize this host."
         info "Wi-Fi (Android 11+): phone and PC on the same network, then use"
         info "Wireless debugging (Developer options) from the control window or:"
@@ -550,14 +576,14 @@ step_device() {
         return 1
     fi
     info "Installing APK on the device..."
-    if "${adb_bin}" -P "${adb_port}" install -r -t "${STAGED_APK}"; then
+    if "${adb_bin}" -P "${adb_port}" "${adb_target[@]}" install -r -t "${STAGED_APK}"; then
         ok "APK installed on device."
     else
         warn "adb install failed; the device may refuse unknown signers."
     fi
-    "${adb_bin}" -P "${adb_port}" shell am start -n "${ANDROID_PKG}/.MainActivity" \
-        >/dev/null 2>&1 || true
-    if "${adb_bin}" -P "${adb_port}" forward "localabstract:${HOST_SOCKET}" \
+    "${adb_bin}" -P "${adb_port}" "${adb_target[@]}" shell am start -n "${ANDROID_PKG}/.MainActivity" \
+        --ez start true >/dev/null 2>&1 || true
+    if "${adb_bin}" -P "${adb_port}" "${adb_target[@]}" forward "localabstract:${HOST_SOCKET}" \
         "localabstract:${DEVICE_SOCKET}" >/dev/null 2>&1; then
         ok "adb forward set: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"
         return 0

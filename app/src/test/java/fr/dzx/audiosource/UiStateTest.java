@@ -2,6 +2,8 @@ package fr.dzx.audiosource;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import android.Manifest;
 
@@ -72,5 +74,15 @@ public class UiStateTest {
                 MainActivity.permissionsToRequest(true, false, false));
         assertArrayEquals(new String[]{Manifest.permission.RECORD_AUDIO},
                 MainActivity.permissionsToRequest(false, false, false));
+    }
+
+    // --- host-triggered auto-start ----------------------------------------
+
+    @Test
+    public void wantsStartRequiresTheIntentFlagAndMicrophonePermission() {
+        assertTrue(MainActivity.wantsStart(true, true));
+        assertFalse(MainActivity.wantsStart(true, false));
+        assertFalse(MainActivity.wantsStart(false, true));
+        assertFalse(MainActivity.wantsStart(false, false));
     }
 }

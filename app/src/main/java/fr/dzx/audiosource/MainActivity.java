@@ -22,6 +22,8 @@ import androidx.core.content.ContextCompat;
 
 public class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 7;
+    /** Extra used by the host monitor/installer to start recording without a tap. */
+    static final String EXTRA_START = "start";
     private TextView statusView;
     private TextView permissionView;
     private RecordService service;
@@ -53,6 +55,31 @@ public class MainActivity extends Activity {
         if (hasMicrophonePermission()) {
             bindService(new Intent(this, RecordService.class), serviceConnection, BIND_AUTO_CREATE);
         }
+        startIfRequested(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        startIfRequested(intent);
+    }
+
+    /**
+     * The service is not exported, so the Linux host launches this activity
+     * with {@code --ez start true} to start recording after it force-stops
+     * the app (auto-reconnect). Starting an exported activity is allowed
+     * from adb; starting the private service directly is not.
+     */
+    private void startIfRequested(Intent intent) {
+        boolean requested = intent != null && intent.getBooleanExtra(EXTRA_START, false);
+        if (wantsStart(requested, hasMicrophonePermission())) {
+            RecordService.start(this);
+        }
+    }
+
+    static boolean wantsStart(boolean startRequested, boolean microphoneGranted) {
+        return startRequested && microphoneGranted;
     }
 
     @Override

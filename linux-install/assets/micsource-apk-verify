@@ -51,7 +51,8 @@ if [[ -z "${APKSIGNER}" || ! -x "${APKSIGNER}" ]]; then
     exit 1
 fi
 
-if ! "${APKSIGNER}" verify --verbose --print-certs "$1"; then
+if ! verify_output="$("${APKSIGNER}" verify "$1" 2>&1)"; then
+    printf '%s\n' "${verify_output}" >&2
     echo "micsource-apk-verify: APK signature verification failed: $1" >&2
     exit 1
 fi

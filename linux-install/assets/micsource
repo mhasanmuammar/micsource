@@ -459,7 +459,8 @@ device_install() {
         fi
     fi
     adb_run shell am force-stop "${ANDROID_PKG}" >/dev/null 2>&1 || true
-    adb_run shell am start -n "${ANDROID_PKG}/.MainActivity" >/dev/null 2>&1 || true
+    adb_run shell am start -n "${ANDROID_PKG}/.MainActivity" --ez start true \
+        >/dev/null 2>&1 || true
     adb_run forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
     if adb_run forward "localabstract:${HOST_SOCKET}" "localabstract:${DEVICE_SOCKET}"; then
         info "Forward active: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"

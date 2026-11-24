@@ -676,6 +676,7 @@ case_apk_signature_verification() {
     cat >"${sdk}/build-tools/34.0.0/apksigner" <<'STUB'
 #!/bin/sh
 printf 'apksigner %s\n' "$*" >> "${STUB_LOG}"
+printf 'WARNING: benign META-INF metadata\n'
 exit "${APKSIGNER_RESULT:-0}"
 STUB
     chmod +x "${sdk}/build-tools/34.0.0/apksigner"
@@ -684,7 +685,8 @@ STUB
     env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" PATH="/usr/bin:/bin" \
         bash "${APK_VERIFY}" "${apk}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
     assert_exit 0 "${RC}"
-    assert_contains "${STUB_LOG}" "apksigner verify --verbose --print-certs ${apk}"
+    assert_contains "${STUB_LOG}" "apksigner verify ${apk}"
+    assert_not_contains "${TEST_STDOUT}${TEST_STDERR}" "WARNING: benign META-INF metadata"
 
     RC=0
     env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" APKSIGNER_RESULT=1 \
@@ -992,6 +994,63 @@ PY
     end_case
 }
 
+##############################################################################
+# Case 26: device install honours the configured serial when both USB and
+# Wi-Fi transports are online (plain `adb get-state` is ambiguous then)
+##############################################################################
+case_install_device_with_serial() {
+    start_case 26 "device step honours the configured serial with USB+Wi-Fi online"
+    make_sandbox
+    mkdir -p "${TEST_CONFIG_DIR}"
+    cat >"${TEST_CONFIG_INI}" <<'EOF'
+[adb]
+server_port = 5038
+
+[device]
+serial = wifi-serial
+EOF
+    cat >"${STUBBIN}/adb" <<'STUB'
+#!/bin/sh
+printf 'adb %s\n' "$*" >> "${STUB_LOG}"
+case " $* " in
+    *" get-state "*)
+        case " $* " in
+            *" -s wifi-serial "*) echo device; exit 0 ;;
+            *) echo "error: more than one device/emulator" >&2; exit 1 ;;
+        esac
+        ;;
+esac
+exit 0
+STUB
+    chmod +x "${STUBBIN}/adb"
+    cat >"${STUBBIN}/apksigner" <<'STUB'
+#!/bin/sh
+printf 'apksigner %s\n' "$*" >> "${STUB_LOG}"
+exit 0
+STUB
+    chmod +x "${STUBBIN}/apksigner"
+    # The verifier resolves the SDK from build-env.path (run_script clears
+    # ANDROID_HOME) and uses its apksigner before PATH.
+    mkdir -p "${TEST_DATA_DIR}" "${SANDBOX}/android-sdk/build-tools/34.0.0"
+    printf 'ANDROID_HOME=%s\n' "${SANDBOX}/android-sdk" >"${TEST_DATA_DIR}/build-env.path"
+    ln -sf "${STUBBIN}/apksigner" "${SANDBOX}/android-sdk/build-tools/34.0.0/apksigner"
+
+    run_script $'n\nn\n' "${INSTALL}"
+    assert_exit 0 "${RC}"
+    combine_output
+    assert_contains "${COMBINED}" "APK installed on device."
+    assert_not_contains "${COMBINED}" "device (skipped)"
+    assert_contains "${STUB_LOG}" "adb -P 5038 -s wifi-serial get-state"
+    assert_contains "${STUB_LOG}" \
+        "adb -P 5038 -s wifi-serial forward localabstract:micsource localabstract:audiosource"
+    local install_line
+    install_line="$(grep ' install ' "${STUB_LOG}" || true)"
+    if [[ "${install_line}" != *"adb -P 5038 -s wifi-serial install "* ]]; then
+        fail_case "APK install did not target the configured serial: ${install_line}"
+    fi
+    end_case
+}
+
 # Invoked via `trap cleanup EXIT`; shellcheck cannot see that call → false
 # positive SC2317.
 # shellcheck disable=SC2317
@@ -1030,6 +1089,7 @@ main() {
     case_uninstall_preserves_foreign_adb_link
     case_cli_rejects_system_adb_port
     case_apk_verify_agp_style_metadata
+    case_install_device_with_serial
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
     ((FAILED == 0)) || exit 1
