@@ -1,13 +1,11 @@
 # Android MicSource Branding, Wireless Debugging, and Phone GUI Plan
 
 **Status:** Tasks 1–5 implemented. Remaining unfinished: instrumented Android
-lifecycle tests (no emulator) and a simultaneous two-server coexistence run
-(needs a device-free environment).
+lifecycle tests (no emulator) and first-time pairing/revoke (the test phone was
+already paired).
 
-**Next agent:** Nothing in this plan is required for normal use. If the
-device-free environment is available, run the two-server coexistence check
-(plan Task 5) and record it; otherwise leave the dormant tray menu issue and
-those checks alone.
+**Next agent:** Nothing in this plan is required for normal use. The dormant
+tray menu issue is still out of scope.
 
 > **Progress (2026-11-24):** Task 5 completed on the Redmi A5. The APK was
 > rebuilt (20/20 Android JVM unit tests) and updated in place over USB with
@@ -27,10 +25,13 @@ those checks alone.
 > a force-stop cold start over Wi-Fi now binds `localabstract:audiosource`
 > again (the private service cannot be started directly from adb). Dead-player
 > recovery re-verified live (killed `paplay`, new player in <12 s, counter kept
-> growing). Unfinished: instrumented Start/Stop lifecycle tests (no emulator),
-> first-time pairing/revoke was not repeated (device already paired), and the
-> simultaneous 5037/5038 coexistence run (previous attempt caused USB claim
-> contention; needs a device-free environment).
+> growing). ADB-server coexistence observed with both servers up: the system
+> server on 5037 and MicSource on 5038 listen side by side, MicSource keeps
+> USB + wireless transports and the forward, and the system server keeps its
+> mDNS transports; neither killed the other. (Only one server can claim the
+> USB device at a time — expected ADB behavior.) Unfinished: instrumented
+> Start/Stop lifecycle tests (no emulator) and first-time pairing/revoke (the
+> test phone was already paired).
 
 
 > **Progress (2026-11-19):** Task 1 now routes all MicSource ADB clients through
