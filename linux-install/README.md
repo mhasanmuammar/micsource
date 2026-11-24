@@ -200,13 +200,23 @@ unless you opt in).
 - The control window's Monitoring row shows `on — phone audio is streaming`
   with a live input-level bar fed by the monitor's `level` metric.
 - `micsource status` returns `audio_seconds=N` — the number of seconds of
-  phone audio received since the service started; it should keep growing.
+  phone audio received since the service started; it should keep growing —
+  and `dropped_seconds=M`, the audio discarded by the latency guard to keep
+  playback close to real time (normally ~0.2 % of `audio_seconds` or less;
+  a fast climb means a weak Wi-Fi link).
+- The player queue is bounded to 16 KB (~186 ms). This is what keeps a
+  Wi-Fi burst from building a permanent delay: surplus audio is dropped
+  instead of queued.
+- If the host audio player dies, the monitor respawns it within a few
+  seconds (`no live audio players; pausing pump` in the journal) and the
+  counter keeps growing.
 - Play into `phone-mic` from any app (e.g. pavucontrol → Recording tab
   shows the level); the phone audio is not played aloud unless
   `play_to_speakers = true`.
 - If forwarding stalls because the phone app wedges (rare; e.g. right after
   an APK re-install), the monitor relaunches the app on the phone
-  automatically to recover.
+  automatically (`am start … --ez start true`, because the service is not
+  exported) to recover.
 
 **GNOME quick settings pill:** enable with
 `gnome-extensions enable micsource-tile@micsource.local` (or flip it on in the

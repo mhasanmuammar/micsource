@@ -1,13 +1,37 @@
 # Android MicSource Branding, Wireless Debugging, and Phone GUI Plan
 
-**Status:** Tasks 1–4 implemented; Task 5 remains.
+**Status:** Tasks 1–5 implemented. Remaining unfinished: instrumented Android
+lifecycle tests (no emulator) and a simultaneous two-server coexistence run
+(needs a device-free environment).
 
-**Next agent:** Finish Task 5. Update `docs/USER.md`, `docs/AGENT.md`, and
-`README.md` for MicSource branding, phone controls, USB/Wi-Fi pairing, and
-device selection. Then validate the APK and USB/Wi-Fi reconnect flow on a
-phone, and test ADB server coexistence only in a controlled no-device setup.
-Record any unavailable checks as unfinished; do not debug the dormant tray
-menu issue.
+**Next agent:** Nothing in this plan is required for normal use. If the
+device-free environment is available, run the two-server coexistence check
+(plan Task 5) and record it; otherwise leave the dormant tray menu issue and
+those checks alone.
+
+> **Progress (2026-11-24):** Task 5 completed on the Redmi A5. The APK was
+> rebuilt (20/20 Android JVM unit tests) and updated in place over USB with
+> app data preserved (`lastUpdateTime` 08:19, matching debug cert
+> `a8e9e88e…`), which proved in-place updates work. The final test-phone
+> install was then standardized to the user's normal `~/.android` debug key
+> (`18edd6b8…`, the key `./install.sh` builds with): uninstall + install +
+> `pm grant RECORD_AUDIO`/`POST_NOTIFICATIONS` (the app holds no user data).
+> Installed over Wi-Fi (`192.168.68.100:35919`). USB and Wireless debugging
+> both stream: USB 45 s queue peak 4,478 B / 50.8 ms with 0 drops; final
+> Wi-Fi 60 s queue peak 4,388 B / 49.8 ms with 0 drops (earlier Wi-Fi runs
+> peaked 8.5–13.6 KB, all under the 16 KB latency-governor cap). Reconnect
+> after Wi-Fi loss was exercised (transport dropped, Wireless debugging
+> re-enabled on a new port, reconnect + forward + stream). Auto-start was
+> fixed with an exported-activity extra:
+> `am start -n …/.MainActivity --ez start true` → `RecordService.start(this)`;
+> a force-stop cold start over Wi-Fi now binds `localabstract:audiosource`
+> again (the private service cannot be started directly from adb). Dead-player
+> recovery re-verified live (killed `paplay`, new player in <12 s, counter kept
+> growing). Unfinished: instrumented Start/Stop lifecycle tests (no emulator),
+> first-time pairing/revoke was not repeated (device already paired), and the
+> simultaneous 5037/5038 coexistence run (previous attempt caused USB claim
+> contention; needs a device-free environment).
+
 
 > **Progress (2026-11-19):** Task 1 now routes all MicSource ADB clients through
 > port 5038 by default, stops publishing the bundle as bare `adb`, migrates

@@ -202,15 +202,32 @@ download. Scratch dirs are `mktemp -d` under the data dir, tracked in
    `app/build.gradle`: without the keystore the automatic debug key signs the
    APK). After the build it rescans the candidate list; stages the copy as
    `~/.local/share/micsource/micsource-release.apk`; writes `apk.path`.
-5. `step_device` — checks `adb get-state`; if a device is online, verifies the
-   APK with SDK `apksigner` (`verify --verbose --print-certs`, no `-Werr` —
-   real AGP APKs emit benign META-INF warnings that `-Werr` would turn into a
-   false refusal) before
-   `adb install -r -t`, then launches `fr.dzx.audiosource/.MainActivity` and
-   sets up `adb forward localabstract:micsource localabstract:audiosource`.
-   Reports the **real** forward result: a failed forward fails the step
-   (previously it printed "adb forward set" unconditionally). No device online
-   is a recorded skip, not a failure.
+5. `step_device` — reads `[device] serial` and runs every device command as
+   `adb -P <port> -s <serial> …`, so USB and wireless transports can be
+   online together without `more than one device/emulator`. It checks
+   `adb get-state`; if a device is online, verifies the
+   APK quietly with SDK `apksigner verify` (no `--verbose` flood; output is
+   printed only on failure — real AGP APKs emit benign META-INF warnings,
+   so the exit status is what counts) before
+   `adb install -r -t`, then launches `fr.dzx.audiosource/.MainActivity`
+   with `--ez start true` (the activity starts recording; the service itself
+   is not exported, so adb cannot start it directly) and
+   sets up `adb forward localabstract:micsource localabstract:audiosource`
+   for the selected serial. Reports the **real** forward result: a failed
+   forward fails the step (previously it printed "adb forward set"
+   unconditionally). No device online is a recorded skip, not a failure — but
+   more than one transport online *without* a configured serial is an
+   explicit error with guidance.
+
+**Debug-signing gotcha.** The debug keystore follows `$HOME`
+(`~/.android/debug.keystore`). Builds run under a different `HOME` (flatpak
+or sandbox config dirs both exist on this machine) produce a different key,
+so `adb install -r` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` even
+though the code is identical. Before claiming an in-place update, compare
+`apksigner verify --print-certs` of the built APK with the installed
+`base.apk`; if the SHA-256 differs, uninstall + install, then re-grant
+`RECORD_AUDIO` and `POST_NOTIFICATIONS` with `adb shell pm grant` (and restart
+the forward/monitor).
 6. `step_config` — writes `~/.config/micsource/config.ini` (mode 600), with
    `host_socket_name = micsource` and `device_socket_name = audiosource`.
 7. `step_desktop` — installs `micsource.desktop` (app drawer); its `Exec` is
@@ -596,6 +613,13 @@ on stderr).
   call `start_audio()` unconditionally and then `_route_guard()`; when the
   device goes offline, call `stop_audio()` (full teardown of players *and*
   virtual-mic modules, so `phone-mic`/`phone-out` disappear promptly).
+  `start_device_service()` launches `MainActivity` with `--ez start true`;
+  the activity calls `RecordService.start(this)` on the activity
+  (`MainActivity.wantsStart(requested, micGranted)`). This is the only
+  working auto-start path: `am start-foreground-service`/`start-service` on
+  the non-exported `RecordService` fails with *Requires permission not
+  exported from uid …*, and the foreground notification can exist while
+  `RecordThread` never binds `localabstract:audiosource`.
 - `_route_guard()`: defense against the audio policy re-routing our paplay
   streams. PipeWire (1.6.8) was observed moving the `--device=phone-out`
   stream onto the desktop's default speakers via module-stream-restore /
@@ -631,7 +655,24 @@ on stderr).
   streamed "for testing"; that whole path is removed.
 - Audio playback (plain `paplay`; the old `aplay`/`pactl play -` fallbacks
   were removed): `pw-cat` needs **no** stdin-file token (`-` breaks it);
-  player stdin is set `O_NONBLOCK` and the pump drops chunks on full pipes.
+  player stdin is set `O_NONBLOCK`.
+- **Bounded player queue (latency governor).** Each player stdin is a pipe
+  resized to `PLAYER_PIPE_BYTES` (16 KB ≈ 186 ms of s16le 44.1 kHz mono).
+  The kernel pipe used to be the unbounded queue: after a Wi-Fi burst it
+  held 51,576 bytes ≈ 585 ms, and because the phone's capture rate equals
+  the playback rate the backlog never drained — the audible "delay that
+  never goes away" bug. `_pump` now checks `_pipe_occupancy` (FIONREAD)
+  before writing, `_write_player` writes only the even-aligned prefix that
+  fits, and surplus bytes are dropped (`_note_dropped`) instead of queued.
+  Dropping whole even-aligned chunks keeps stereo/s16 sample alignment.
+  Budget is measured: 4 KB over-dropped (~5.8%); 16 KB gave **0.22 % drops
+  and a 147 ms peak queue** over 120 s of Wi-Fi streaming.
+- **Dead-player recovery:** `_live_players` filters exited players each
+  loop; when every player has died, `start_audio()` respawns the chain and
+  `_pump(epoch)` (epoch-guarded by `_pump_epoch`) pauses instead of piping
+  into a corpse. Verified live by killing `paplay`: a new player appeared
+  within 8 s, `audio_seconds` kept growing and the journal logged
+  `no live audio players; pausing pump`.
 - Known PipeWire quirk: capturing directly from `phone-out.monitor` with
   `parecord` may deliver zeros even while the chain is healthy — the
   remap-source consumes the sink node internally. `phone-mic` itself is
@@ -639,9 +680,12 @@ on stderr).
   monitor).
 - Exposes a control Unix socket at `~/.local/share/micsource/micsource.sock`
   (mode 600) accepting commands: `status` → `device=1 forward=1
-  audio_seconds=N name=<model>` (N = seconds of phone audio received, live
-  byte counter `_pcm_bytes / 88200` rounded down; the `name=` field is
-  appended only while the device is online and the model is known);
+  audio_seconds=N dropped_seconds=M name=<model>` (N = seconds of phone
+  audio received from the device, including the small share later dropped;
+  M = whole seconds discarded by the latency governor; both come from byte
+  counters, no raw-byte fields are exposed;
+  the `name=` field is appended only while the device is online and the
+  model is known);
   `level` → smoothed input level `0.000–1.000` for the app's visualizer
   (see below); `restart`. Socket
   creation/unlink failures are caught and logged instead of crashing, and

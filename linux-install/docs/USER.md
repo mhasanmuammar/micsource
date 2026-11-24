@@ -185,7 +185,9 @@ are baked into the phone app and must stay as-is.
 
 1. **Control window:** it shows `Monitoring: on (background service) — N s
    forwarded` (a live counter) while the service is streaming. `micsource
-   status` also prints `audio_seconds=N`, which grows as long as audio flows.
+   status` also prints `audio_seconds=N`, which grows as long as audio flows,
+   plus `dropped_seconds=M` — the audio MicSource discarded to keep latency
+   bounded (see *Audio is delayed over Wi-Fi* below).
 2. **Input device:** run `pactl list sources short | grep phone-mic` (or open
    pavucontrol → Input Devices): "MicSource (phone mic)" appears while
    monitoring runs, and disappears when you stop it.
@@ -219,7 +221,9 @@ there unless you uninstall it separately).
 | "phone-mic" missing from `pactl` / app pickers | Monitoring must be running — the device is created when audio forwarding starts and removed when it stops. If monitoring is on but the device is missing, check `pactl` exists; config flags: set `[audio] virtual_mic = true`.
 | No voice activity in GNOME Settings / the volume slider does nothing | The service must be running (`micsource status`); the meter only moves while the background service streams. Routing self-heals within ~5 s after the service (re)starts; `micsource stop && micsource start` then pick **MicSource (phone mic)** in the panel. |
 | Phone sound suddenly comes out of the PC speakers (without `play_to_speakers`) | The audio policy re-routed the stream; the service repairs this itself within ~5 s. If it recurs, `micsource stop && micsource start`, and re-run install.sh so `~/.config/pipewire/pipewire-pulse.conf.d/10-micsource-stream-lock.conf` is restored. |
-| Monitoring stuck at 0 seconds | Confirm RECORD_AUDIO was granted on the phone (and the app can record — check its notification says "recording"). If audio stalls after an APK reinstall, `micsource stop && micsource start` relaunches the phone app automatically; the monitor also self-recovers within ~20 s. |
+| Monitoring stuck at 0 seconds | Confirm RECORD_AUDIO was granted on the phone (and the app can record — check its notification says "recording"). After an APK reinstall, `micsource stop && micsource start` relaunches the phone app; the monitor also self-recovers within ~20 s by opening the app with `--ez start true`. If it still stays at 0, open MicSource on the phone once and tap **Start microphone** (the service is private, so Android blocks direct starts from adb). |
+| Audio is delayed over Wi-Fi (delay grows after a pause, never catches up) | Fixed in the current monitor: it keeps at most 16 KB (~186 ms) queued for the player and drops surplus audio, so a Wi-Fi burst can no longer build a permanent backlog. Check `micsource status` — `dropped_seconds` normally stays near 0.2 % of `audio_seconds` (e.g. 0–2 s dropped per 10 min). If `dropped_seconds` climbs much faster, the Wi-Fi link is too weak; move closer to the AP or switch to USB. Re-run `./install.sh` and restart the service after upgrading to get the bounded-queue monitor. |
+| Audio went silent but the phone still shows the recording notification | The audio player on the PC died; the monitor respawns it within ~5–10 s and logs `no live audio players; pausing pump` in `journalctl --user -u micsource -f`. If it does not recover, `micsource stop && micsource start`. |
 | `adb: command not found` | Re-run `./install.sh` and agree to install the private ADB bundle. MicSource uses the selected binary directly; it does not need `adb` on your shell `PATH`. |
 | Wireless pairing fails ("already paired", wrong code, or timeout) | Codes and pairing addresses are temporary — open **Pair device with pairing code** on the phone again and use the fresh `Pairing IP:port` and code immediately; pair and connect ports are different, so use the **Connect IP:port** for `wireless-connect`. |
 | Phone and PC on different networks / pairing finds nothing | Both devices must be on the same Wi-Fi network; guest/AP-isolated networks block device-to-device traffic. If mDNS discovery finds nothing (`micsource wireless-discover`), multicast may be blocked — enter the addresses manually. |
