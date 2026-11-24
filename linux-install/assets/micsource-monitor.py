@@ -11,6 +11,7 @@ Runs as the user (no root). Responsibilities:
 """
 import array
 import configparser
+import fcntl
 import math
 import os
 import re
@@ -158,7 +159,8 @@ def ensure_forward():
 def start_device_service():
     run_adb(["shell", "am", "force-stop", ANDROID_PKG], timeout=8)
     rc, _out, err = run_adb(
-        ["shell", "am", "start", f"{ANDROID_PKG}/.MainActivity"], timeout=10
+        ["shell", "am", "start", "-n", f"{ANDROID_PKG}/.MainActivity",
+         "--ez", "start", "true"], timeout=10
     )
     return rc == 0, err
 
@@ -180,8 +182,23 @@ _src_mod = None
 _vmic_lock = threading.Lock()
 _vm_ok = False
 _pumping = False
+_pump_epoch = 0
 _pcm_bytes = 0
 audio_procs = []
+
+# Latency governor. The player pipe is the only unbounded queue between the
+# network and the speakers: if a Wi-Fi burst fills it, the input rate equals
+# the playback rate, so the backlog never drains and every later sample plays
+# late (observed: 52 KiB queued = ~0.6 s permanent delay). Keep at most
+# ~186 ms of 44.1 kHz s16 mono queued instead and drop the surplus.
+PLAYER_PIPE_BYTES = 16384
+_FIONREAD = 0x541B
+F_SETPIPE_SZ = getattr(fcntl, "F_SETPIPE_SZ", 1031)
+F_GETPIPE_SZ = getattr(fcntl, "F_GETPIPE_SZ", 1032)
+_DROPPED_LOG_SECONDS = 10.0
+_dropped_total = 0
+_dropped_since_log = 0
+_dropped_log_at = 0.0
 
 
 def _cfg_bool(section, key, default):
@@ -334,12 +351,89 @@ def _set_stdin_nonblocking(child):
     if child is None or child.stdin is None:
         return
     try:
-        import fcntl
         fd = child.stdin.fileno()
         flags = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
     except Exception:
         pass
+
+
+def _pipe_occupancy(fd):
+    """Bytes currently queued in a pipe (works on the write end too)."""
+    buf = array.array("i", [0])
+    fcntl.ioctl(fd, _FIONREAD, buf, True)
+    return max(0, buf[0])
+
+
+def _set_player_pipe_size(fd):
+    """Shrink the player pipe to the latency budget (best effort).
+
+    Admission control in `_write_player` still bounds the queue when the
+    kernel refuses to resize a pipe (e.g. it already holds more data)."""
+    try:
+        if fcntl.fcntl(fd, F_GETPIPE_SZ) > PLAYER_PIPE_BYTES:
+            fcntl.fcntl(fd, F_SETPIPE_SZ, PLAYER_PIPE_BYTES)
+    except OSError:
+        pass
+
+
+def _even_chunk(carry, data):
+    """Split byte data on a 16-bit sample boundary.
+
+    A drop of an odd number of bytes would swap every following sample's
+    halves (loud noise), so the odd trailing byte is carried to the next
+    chunk instead of being played or discarded.
+    """
+    buf = carry + data
+    cut = len(buf) - (len(buf) % 2)
+    return buf[:cut], buf[cut:]
+
+
+def _write_player(fd, data):
+    """Queue as much PCM as fits in the latency budget.
+
+    Returns the number of bytes accepted; the caller drops the rest. Writing
+    the fitting prefix (rather than dropping a whole early chunk) keeps the
+    loss proportional to the actual network excess instead of silencing
+    audio whenever the pipe is nearly full. Data must contain whole 16-bit
+    samples (`_even_chunk`), and the returned count is kept even so a drop
+    cannot swap sample halves.
+    """
+    if not data:
+        return 0
+    try:
+        queued = _pipe_occupancy(fd)
+        capacity = fcntl.fcntl(fd, F_GETPIPE_SZ)
+    except OSError:
+        queued, capacity = 0, PLAYER_PIPE_BYTES
+    free = min(capacity, PLAYER_PIPE_BYTES) - queued
+    count = min(len(data), free)
+    count -= count % 2
+    if count <= 0:
+        return 0
+    try:
+        return os.write(fd, data[:count])
+    except (BlockingIOError, OSError):
+        return 0
+
+
+def _live_players(procs):
+    return [child for child in procs if child.poll() is None]
+
+
+def _note_dropped(count):
+    """Count/rate-limit reporting of audio dropped to protect latency."""
+    global _dropped_total, _dropped_since_log, _dropped_log_at
+    if count <= 0:
+        return
+    _dropped_total += count
+    _dropped_since_log += count
+    now = time.monotonic()
+    if now - _dropped_log_at >= _DROPPED_LOG_SECONDS:
+        _log(f"latency guard dropped {_dropped_since_log} bytes "
+             f"(~{_dropped_since_log / 88200.0:.2f}s) of stale audio")
+        _dropped_since_log = 0
+        _dropped_log_at = now
 
 
 # Env props for the players: a distinctive media.role identifies MicSource
@@ -369,20 +463,35 @@ def _spawn_player(args_extra=None):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=_PLAYER_ENV,
+            bufsize=0,
         )
     except (FileNotFoundError, OSError):
         return None
     _set_stdin_nonblocking(child)
+    try:
+        _set_player_pipe_size(child.stdin.fileno())
+    except (AttributeError, OSError):
+        pass
     return child
 
 
 def start_audio():
     """Start forwarding device PCM audio (speakers and/or virtual mic)."""
-    global _pumping
+    global _pumping, _pump_epoch
     with audio_lock:
         if _pumping:
-            _vmic_start()
-            return True
+            live = _live_players(audio_procs)
+            if live:
+                audio_procs[:] = live
+                _vmic_start()
+                return True
+            # Every player exited (sink torn down, paplay crash, ...).
+            # Streaming into their dead pipes would keep counting audio
+            # while nothing is audible, so reset and spawn fresh players.
+            _log("all audio players exited; restarting them")
+            _pumping = False
+            audio_procs.clear()
+            _pump_epoch += 1
         kids = []
         if _vmic_enabled():
             _vmic_start()
@@ -403,7 +512,8 @@ def start_audio():
             return False
         audio_procs[:] = kids
         _pumping = True
-    threading.Thread(target=_pump, daemon=True).start()
+        epoch = _pump_epoch
+    threading.Thread(target=_pump, args=(epoch,), daemon=True).start()
     return True
 
 
@@ -510,12 +620,13 @@ def _current_level():
     return max(0.0, min(1.0, lvl))
 
 
-def _pump():
+def _pump(epoch=None):
     """Read PCM from the host-side forward socket and pipe it to the player."""
-    global _pcm_bytes
+    global _pcm_bytes, _pumping
+    carry = b""
     while True:
         with audio_lock:
-            pumping = _pumping
+            pumping = _pumping and (epoch is None or epoch == _pump_epoch)
         if not pumping:
             break
         sock = None
@@ -525,9 +636,16 @@ def _pump():
             sock.connect(b"\0" + HOST_SOCKET.encode())
             while True:
                 with audio_lock:
-                    children = [c for c in audio_procs if c.poll() is None]
-                    pumping = _pumping
+                    children = _live_players(audio_procs)
+                    pumping = _pumping and (epoch is None or epoch == _pump_epoch)
                 if not pumping:
+                    break
+                if not children:
+                    # No sink left to play into. Let the supervisor spawn
+                    # fresh players instead of draining audio invisibly.
+                    _log("no live audio players; pausing pump")
+                    with audio_lock:
+                        _pumping = False
                     break
                 try:
                     data = sock.recv(4096)
@@ -537,12 +655,19 @@ def _pump():
                     break
                 _pcm_bytes += len(data)
                 _update_level(data)
+                chunk, carry = _even_chunk(carry, data)
+                dropped = 0
                 for child in children:
                     try:
-                        child.stdin.write(data)
-                        child.stdin.flush()
-                    except (BrokenPipeError, OSError):
-                        pass
+                        fd = child.stdin.fileno()
+                    except (AttributeError, OSError):
+                        continue
+                    written = _write_player(fd, chunk)
+                    if written < len(chunk):
+                        # Both player streams carry the same audio; report
+                        # the shared loss once, not once per player.
+                        dropped = max(dropped, len(chunk) - written)
+                _note_dropped(dropped)
         except OSError:
             pass
         finally:
@@ -583,7 +708,8 @@ def control_server():
                     onl = device_online()
                     fwd = socket_forwarded()
                     resp = (f"device={int(onl)} forward={int(fwd)} "
-                            f"audio_seconds={_pcm_bytes // 88200}")
+                            f"audio_seconds={_pcm_bytes // 88200} "
+                            f"dropped_seconds={_dropped_total // 88200}")
                     name = device_name() if onl else ""
                     if name:
                         resp += f" name={name}"
