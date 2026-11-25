@@ -31,8 +31,10 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          build-tools: 34.0.0
+          cmdline-tools-version: 12266719
+          packages: platforms;android-34 build-tools;34.0.0
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
 
       - name: Verify Gradle wrapper
         uses: gradle/actions/wrapper-validation@v4
@@ -41,11 +43,6 @@ jobs:
         run: ./gradlew --no-daemon testDebugUnitTest
 
       # Optional release signing. Configure these repository secrets to keep
-  # the same signer across releases (required for in-place app updates):
-  #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
-  #   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
-  # Without them the APK is debug-signed, which is fine for sideloading
-  # but cannot update an APK signed by a different key.
       # the same signer across releases (required for in-place app updates):
       #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
       #   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
@@ -95,7 +92,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder
           flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install -y flathub org.gnome.Platform//51 org.gnome.Sdk//51
+          flatpak install -y flathub org.gnome.Platform//47 org.gnome.Sdk//47
 
       - name: Build Flatpak bundle
         run: |
@@ -117,4 +114,3 @@ jobs:
           gh release upload "${tag}" "dist/micsource-${VERSION}.apk" --clobber
           if [ -f "dist/micsource-${VERSION}.flatpak" ]; then
             gh release upload "${tag}" "dist/micsource-${VERSION}.flatpak" --clobber
-          fi

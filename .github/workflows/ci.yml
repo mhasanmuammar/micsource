@@ -22,8 +22,10 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          build-tools: 34.0.0
+          cmdline-tools-version: 12266719
+          packages: platforms;android-34 build-tools;34.0.0
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
 
       - name: Run JVM unit tests
         run: ./gradlew testDebugUnitTest
@@ -43,11 +45,30 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 34
-          build-tools: 34.0.0
+          cmdline-tools-version: 12266719
+          packages: platforms;android-34 build-tools;34.0.0
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
 
       - name: Assemble debug APK
         run: ./gradlew assembleDebug
+
+  flatpak-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Flatpak manifest YAML
+        run: |
+          pip install pyyaml
+          python3 -c "import yaml; yaml.safe_load(open('flatpak/io.github.mhasanmuammar.MicSource.yml'))"
+
+      - name: Validate AppStream metainfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appstream
+          appstreamcli validate flatpak/io.github.mhasanmuammar.MicSource.metainfo.xml
 
   flatpak:
     runs-on: ubuntu-latest
@@ -63,23 +84,10 @@ jobs:
 
       - name: Install GNOME runtime
         run: |
-          flatpak install -y flathub org.gnome.Platform//51 org.gnome.Sdk//51
+          flatpak install -y flathub org.gnome.Platform//47 org.gnome.Sdk//47
 
       - name: Build Flatpak
         run: flatpak-builder --user --install --force-clean builddir flatpak/io.github.mhasanmuammar.MicSource.yml
 
       - name: Verify Flatpak app ID
         run: flatpak run io.github.mhasanmuammar.MicSource --version 2>/dev/null || true
-
-  flatpak-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install flatpak-builder-lint
-        run: |
-          pip install flatpak-builder-lint
-
-      - name: Lint Flatpak manifest
-        run: flatpak-builder-lint flatpak/io.github.mhasanmuammar.MicSource.yml 2>&1 || true

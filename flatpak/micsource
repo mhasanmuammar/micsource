@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+#
+# micsource - command-line client for the MicSource Linux host suite.
+#
+# Copied from linux-install/assets/micsource (the source of truth) into
+# ~/.local/share/micsource by the installer, then linked from
+# ~/.local/bin/micsource.
+#
+# Commands:
+#   start        Start the background monitor service (systemd if available)
+#   stop         Stop the monitor
+#   status       Show service / device / socket-forward status
+#   run          Foreground: set up the forward and stream audio until Ctrl+C
+#   tray         Launch the system tray icon (background)
+#   devices      List USB and wireless ADB devices
+#   device-select SERIAL  Select the device used by MicSource
+#   wireless-pair IP:PORT Pair using the phone's temporary pairing endpoint
+#   wireless-connect IP:PORT Connect using its separate Wireless debugging endpoint
+#   wireless-disconnect [IP:PORT] Disconnect a wireless device
+#   config       Open the config folder
+#   help         Show this help
+#
+set -euo pipefail
+
+APP_NAME="micsource"
+DATA_DIR="${MICSOURCE_DATA_DIR:-${HOME}/.local/share/micsource}"
+CONFIG_DIR="${MICSOURCE_CONFIG_DIR:-${HOME}/.config/micsource}"
+TRAY_PATH="${DATA_DIR}/micsource-tray.py"
+MONITOR_PATH="${DATA_DIR}/micsource-monitor.py"
+GUI_PATH="${DATA_DIR}/micsource-gui"
+CTL_SOCK="${MICSOURCE_RUNTIME_DIR:-${DATA_DIR}}/micsource.sock"
+SYSTEMD_UNIT="${HOME}/.config/systemd/user/micsource.service"
+DEVICE_SOCKET="audiosource"      # device-side socket (RecordThread)
+HOST_SOCKET="micsource"          # host side of the adb forward
+
+info() { printf '[INFO] %s\n' "$*"; }
+ok() { printf '[OK]   %s\n' "$*"; }
+warn() { printf '[WARN] %s\n' "$*"; }
+err() { printf '[ERR]  %s\n' "$*" >&2; }
+
+ask() { printf '[?]  %s ' "$*"; }
+
+confirm() {
+    local prompt="${1:-Proceed?}"
+    local ans
+    ask "${prompt} [y/N] "
+    read -r ans || true
+    case "$ans" in
+    y | Y | yes | Yes | YES) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+    cat <<HELP
+Usage: micsource <command>
+
+Commands:
+  start        Start the background monitor service (systemd if available)
+  stop         Stop the monitor
+  status       Show service / device / socket-forward status
+  run          Foreground: set up the forward and stream audio until Ctrl+C
+  tray         Launch the system tray icon (background)
+  window       Open the desktop control window
+  devices      List USB and wireless ADB devices
+  device-select SERIAL  Select the device used by MicSource ('none' clears it)
+  wireless-pair IP:PORT Pair using the phone's temporary pairing endpoint
+  wireless-connect IP:PORT Connect using its separate Wireless debugging endpoint
+  wireless-disconnect [IP:PORT] Disconnect a wireless device
+  wireless-discover  Show paired Wi-Fi devices found by ADB mDNS
+  config       Open the config folder
+  help         Show this help
+HELP
+}
+
+resolve_adb() {
+    local candidate=""
+    if [[ -f "${CONFIG_DIR}/config.ini" ]]; then
+        candidate="$(awk -F= '/^[[:space:]]*adb_path[[:space:]]*=/ {sub(/^[[:space:]]+/, "", $2); print $2}' \
+            "${CONFIG_DIR}/config.ini" | head -n 1)"
+    fi
+    if [[ -z "$candidate" && -f "${DATA_DIR}/adb.path" ]]; then
+        candidate="$(tr -d '\n' <"${DATA_DIR}/adb.path")"
+    fi
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+    fi
+    if [[ -x "${DATA_DIR}/adb-bundle/platform-tools/adb" ]]; then
+        echo "${DATA_DIR}/adb-bundle/platform-tools/adb"
+        return 0
+    fi
+    command -v adb || true
+}
+
+resolve_adb_server_port() {
+    local port="5038"
+    if [[ -f "${CONFIG_DIR}/config.ini" ]]; then
+        port="$(awk -F= '/^[[:space:]]*server_port[[:space:]]*=/ {sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit}' \
+            "${CONFIG_DIR}/config.ini" | head -n 1)"
+        port="${port:-5038}"
+    fi
+    if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+        err "Invalid [adb] server_port '${port}'; 5037 is reserved for system ADB, choose another port from 1024-65535."
+        return 1
+    fi
+    port=$((10#${port}))
+    if ((port < 1024 || port > 65535 || port == 5037)); then
+        err "Invalid [adb] server_port '${port}'; 5037 is reserved for system ADB, choose another port from 1024-65535."
+        return 1
+    fi
+    printf '%s\n' "${port}"
+}
+
+adb_run() {
+    local adb_bin adb_port
+    adb_bin="$(resolve_adb)"
+    if [[ -z "${adb_bin}" ]]; then
+        err "adb not found; run install.sh to install the private bundle."
+        return 127
+    fi
+    adb_port="$(resolve_adb_server_port)" || return 2
+    local serial
+    serial="$(resolve_device_serial)"
+    if [[ -n "${serial}" ]]; then
+        "${adb_bin}" -P "${adb_port}" -s "${serial}" "$@"
+    else
+        "${adb_bin}" -P "${adb_port}" "$@"
+    fi
+}
+
+adb_run_all() {
+    local adb_bin adb_port
+    adb_bin="$(resolve_adb)"
+    if [[ -z "${adb_bin}" ]]; then
+        err "adb not found; run install.sh to install the private bundle."
+        return 127
+    fi
+    adb_port="$(resolve_adb_server_port)" || return 2
+    "${adb_bin}" -P "${adb_port}" "$@"
+}
+
+resolve_device_serial() {
+    [[ -f "${CONFIG_DIR}/config.ini" ]] || return 0
+    awk -F= '/^[[:space:]]*\[device\][[:space:]]*$/ {section=1; next}
+        /^\[/ {section=0}
+        section && /^[[:space:]]*serial[[:space:]]*=/ {
+            sub(/^[^=]*=/, ""); sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit
+        }' "${CONFIG_DIR}/config.ini"
+}
+
+write_device_serial() {
+    local serial="$1" config="${CONFIG_DIR}/config.ini" temp
+    mkdir -p "${CONFIG_DIR}"
+    temp="$(mktemp "${CONFIG_DIR}/.config.ini.XXXXXX")"
+    if [[ -f "${config}" ]]; then
+        awk -v value="${serial}" '
+            BEGIN { IGNORECASE=1 }
+            /^\[[^]]+\][[:space:]]*$/ {
+                if (in_device && !wrote) { print "serial = " value; wrote=1 }
+                in_device = ($0 ~ /^\[device\][[:space:]]*$/)
+                found_device = found_device || in_device
+                print
+                next
+            }
+            in_device && /^[[:space:]]*serial[[:space:]]*=/ {
+                if (!wrote) print "serial = " value
+                wrote=1
+                next
+            }
+            { print }
+            END {
+                if (in_device && !wrote) { print "serial = " value; wrote=1 }
+                if (!found_device) print "\n[device]\nserial = " value
+            }
+        ' "${config}" >"${temp}"
+    else
+        printf '[device]\nserial = %s\n' "${serial}" >"${temp}"
+    fi
+    chmod 600 "${temp}"
+    mv "${temp}" "${config}"
+}
+
+validate_endpoint() {
+    local endpoint="$1" host port
+    if [[ "${endpoint}" =~ ^\[([^]]+)\]:([0-9]+)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+    elif [[ "${endpoint}" =~ ^([^:]+):([0-9]+)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+    else
+        err "Endpoint must be IP:port (IPv6 must use [address]:port)."
+        return 2
+    fi
+    if [[ -z "${host}" ]] || ((10#${port} < 1 || 10#${port} > 65535)); then
+        err "Endpoint host or port is invalid."
+        return 2
+    fi
+}
+
+list_devices() {
+    adb_run_all devices -l
+}
+
+select_device() {
+    local serial="${1:-}" output
+    if [[ "${serial}" == "none" || -z "${serial}" ]]; then
+        write_device_serial ""
+        restart_monitor_if_active
+        ok "No device is selected; ADB will use its single-device default."
+        return 0
+    fi
+    output="$(adb_run_all devices -l)" || return
+    if ! awk -v serial="${serial}" '$1 == serial && $2 == "device" {found=1} END {exit !found}' <<<"${output}"; then
+        err "'${serial}' is not an authorized online device. Run 'micsource devices' and authorize debugging on the phone."
+        return 1
+    fi
+    write_device_serial "${serial}"
+    restart_monitor_if_active
+    ok "Selected device ${serial}."
+}
+
+restart_monitor_if_active() {
+    if have_cmd systemctl && [[ -f "${SYSTEMD_UNIT}" ]] &&
+        [[ "$(systemctl --user is-active "${APP_NAME}.service" 2>/dev/null || true)" == "active" ]]; then
+        systemctl --user restart "${APP_NAME}.service" ||
+            warn "Selected device saved, but restart failed; run 'micsource stop' then 'micsource start'."
+    fi
+}
+
+wireless_pair() {
+    local endpoint="${1:-}" pairing_code
+    validate_endpoint "${endpoint}" || return
+    if [[ -t 0 ]]; then
+        read -r -s -p "Enter the temporary six-digit pairing code: " pairing_code
+        printf '\n'
+    else
+        IFS= read -r pairing_code || true
+    fi
+    if [[ ! "${pairing_code}" =~ ^[0-9]{6}$ ]]; then
+        unset pairing_code
+        err "Pairing code must be six digits."
+        return 2
+    fi
+    local result=0
+    if printf '%s\n' "${pairing_code}" | adb_run_all pair "${endpoint}"; then
+        result=0
+    else
+        result=$?
+    fi
+    unset pairing_code
+    return "${result}"
+}
+
+wireless_connect() {
+    local endpoint="${1:-}"
+    validate_endpoint "${endpoint}" || return
+    adb_run_all connect "${endpoint}" || return
+    select_device "${endpoint}"
+    adb_run forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
+    adb_run forward "localabstract:${HOST_SOCKET}" "localabstract:${DEVICE_SOCKET}"
+}
+
+wireless_disconnect() {
+    local endpoint="${1:-}" selected
+    if [[ -n "${endpoint}" ]]; then
+        validate_endpoint "${endpoint}" || return
+    fi
+    adb_run_all disconnect ${endpoint:+"${endpoint}"} || return
+    selected="$(resolve_device_serial)"
+    if [[ -n "${endpoint}" && "${selected}" == "${endpoint}" ]]; then
+        write_device_serial ""
+        adb_run_all forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
+        restart_monitor_if_active
+    fi
+}
+
+wireless_discover() {
+    adb_run_all mdns services
+}
+
+service_start() {
+    if have_cmd systemctl; then
+        if [[ ! -f "${SYSTEMD_UNIT}" ]]; then
+            err "Service not installed; run install.sh first."
+            exit 1
+        fi
+        systemctl --user enable --now --quiet "${APP_NAME}.service" 2>/dev/null ||
+            systemctl --user start "${APP_NAME}.service"
+        info "Monitor service started."
+    else
+        if [[ ! -f "${MONITOR_PATH}" ]]; then
+            err "Monitor not installed; run install.sh first."
+            exit 1
+        fi
+        "${MONITOR_PATH}" >/dev/null 2>&1 &
+        info "Monitor started in the background (systemd not available)."
+    fi
+}
+
+service_stop() {
+    if have_cmd systemctl; then
+        systemctl --user stop "${APP_NAME}.service" 2>/dev/null || true
+    fi
+    if have_cmd pkill && [[ -f "${MONITOR_PATH}" ]]; then
+        pkill -f -- "${MONITOR_PATH}" 2>/dev/null || true
+        # Let the monitor exit gracefully first: on SIGTERM it unloads the
+        # virtual mic sources and player processes before dying.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null || break
+            sleep 1
+        done
+        if pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null; then
+            warn "monitor did not exit; sending SIGKILL"
+            pkill -9 -f -- "${MONITOR_PATH}" 2>/dev/null || true
+        fi
+    fi
+    info "Monitor stopped."
+}
+
+query_status() {
+    # 1) Ask the running monitor via its control socket (if any).
+    if [[ -S "${CTL_SOCK}" ]]; then
+        local monitor_resp=""
+        monitor_resp="$(python3 -c '
+import socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(2)
+    s.connect(sys.argv[1])
+    s.sendall(b"status")
+    print(s.recv(256).decode(errors="ignore").strip())
+except Exception:
+    pass
+' "${CTL_SOCK}" || true)"
+        if [[ -n "$monitor_resp" ]]; then
+            info "monitor: ${monitor_resp}"
+        else
+            info "monitor: not responding"
+        fi
+    else
+        info "monitor: not running"
+    fi
+
+    # 2) systemd unit state
+    if have_cmd systemctl && [[ -f "${SYSTEMD_UNIT}" ]]; then
+        local active
+        active="$(systemctl --user is-active "${APP_NAME}.service" 2>/dev/null || true)"
+        info "systemd unit: ${active:-unknown}"
+    fi
+
+    # 3) adb device + forward state
+    local adb_bin state forward_list
+    adb_bin="$(resolve_adb)"
+    if [[ -z "$adb_bin" ]]; then
+        info "adb: not found; run install.sh to install the adb bundle"
+        return 0
+    fi
+    resolve_adb_server_port >/dev/null || return 2
+    state="$(adb_run get-state || true)"
+    info "adb device state: ${state:-none}"
+    forward_list="$(adb_run forward --list || true)"
+    if [[ "$forward_list" == *localabstract:"${HOST_SOCKET}"* ]]; then
+        info "socket forward: active (localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET})"
+    else
+        info "socket forward: not set"
+    fi
+}
+
+one_shot_run() {
+    if [[ ! -f "${MONITOR_PATH}" ]]; then
+        err "Monitor not installed; run install.sh first."
+        exit 1
+    fi
+    exec python3 "${MONITOR_PATH}" --run
+}
+
+launch_window() {
+    if [[ ! -f "${GUI_PATH}" ]]; then
+        err "Control window not installed; run install.sh first."
+        exit 1
+    fi
+    exec "${GUI_PATH}"
+}
+
+launch_tray() {
+    if [[ ! -f "${TRAY_PATH}" ]]; then
+        err "Tray not installed; run install.sh first."
+        exit 1
+    fi
+    "${TRAY_PATH}" --tray >/dev/null 2>&1 &
+    info "Tray launched."
+}
+
+open_config() {
+    if have_cmd xdg-open; then
+        xdg-open "${CONFIG_DIR}" >/dev/null 2>&1 || true
+        info "Opened ${CONFIG_DIR}"
+    else
+        info "Config folder: ${CONFIG_DIR}"
+    fi
+}
+
+command="${1:-help}"
+case "$command" in
+start) service_start ;;
+stop) service_stop ;;
+status) query_status ;;
+run) one_shot_run ;;
+tray) launch_tray ;;
+window) launch_window ;;
+devices) list_devices ;;
+device-select) select_device "${2:-}" ;;
+wireless-pair) wireless_pair "${2:-}" ;;
+wireless-connect) wireless_connect "${2:-}" ;;
+wireless-disconnect) wireless_disconnect "${2:-}" ;;
+wireless-discover) wireless_discover ;;
+config) open_config ;;
+help | --help | -h) usage ;;
+*)
+    err "Unknown command: ${command}"
+    usage >&2
+    exit 2
+    ;;
+esac
