@@ -21,8 +21,7 @@ modules:
   - name: adb
     buildsystem: simple
     build-commands:
-      - unzip -o platform-tools_r34.0.5-linux.zip -d /tmp/platform-tools
-      - install -Dm755 /tmp/platform-tools/platform-tools/adb /app/bin/adb
+      - unzip -o platform-tools_r34.0.5-linux.zip -d platform-tools && install -Dm755 platform-tools/platform-tools/adb /app/bin/adb
     sources:
       - type: file
         url: https://dl.google.com/android/repository/platform-tools_r34.0.5-linux.zip
