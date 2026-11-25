@@ -2,8 +2,6 @@ id: io.github.mhasanmuammar.MicSource
 runtime: org.gnome.Platform
 runtime-version: '47'
 sdk: org.gnome.Sdk
-sdk-extensions:
-  - org.freedesktop.Sdk.Extension.android-tools
 command: micsource-gui
 
 finish-args:
@@ -20,6 +18,18 @@ finish-args:
   - --talk-name=org.gnome.Shell.Extensions
 
 modules:
+  - name: adb
+    buildsystem: simple
+    build-commands:
+      - unzip -o platform-tools_latest-linux.zip -d /tmp/platform-tools
+      - install -Dm755 /tmp/platform-tools/platform-tools/adb /app/bin/adb
+      - install -Dm755 /tmp/platform-tools/platform-tools/AdbWinApi.dll /app/bin/AdbWinApi.dll 2>/dev/null || true
+      - install -Dm755 /tmp/platform-tools/platform-tools/AdbWinUsbApi.dll /app/bin/AdbWinUsbApi.dll 2>/dev/null || true
+    sources:
+      - type: file
+        url: https://dl.google.com/android/repository/platform-tools_r34.0.5-linux.zip
+        sha256: 362f8f6218af0f4c61e5aaafb8e255a426c7a0ee00127dfab7371775081d3124
+        dest: platform-tools_latest-linux.zip
   - name: micsource
     buildsystem: simple
     build-commands:
