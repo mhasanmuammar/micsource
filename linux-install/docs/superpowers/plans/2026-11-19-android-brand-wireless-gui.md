@@ -1,11 +1,20 @@
 # Android MicSource Branding, Wireless Debugging, and Phone GUI Plan
 
-**Status:** Tasks 1–5 implemented. Remaining unfinished: instrumented Android
-lifecycle tests (no emulator) and first-time pairing/revoke (the test phone was
+**Status:** Tasks 1–5 implemented. Instrumented tests pass on the Redmi A5
+(12/12). Only unfinished check: first-time pairing/revoke (the test phone was
 already paired).
 
 **Next agent:** Nothing in this plan is required for normal use. The dormant
 tray menu issue is still out of scope.
+
+> **Progress (2026-11-25):** The instrumented Android tests were run on the
+> physical Redmi A5 over USB (`am instrument`, MicSource's isolated adb server
+> on 5038): **12/12 passed in 7.171 s** —
+> `MainActivityInstrumentedTest` 8/8 (state labels, permission requests,
+> activity launch) and `RecordServiceInstrumentedTest` 4/4 (initial state,
+> start→WAITING, stop→STOPPED, start/stop idempotency). This closes the
+> "no emulator" gap; no source changes were needed. Only first-time
+> pairing/revoke remains unexercised.
 
 > **Progress (2026-11-24):** Task 5 completed on the Redmi A5. The APK was
 > rebuilt (20/20 Android JVM unit tests) and updated in place over USB with
