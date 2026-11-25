@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MicSource
+GenericName=Phone Microphone over USB
+Comment=Use your Android phone as a PC microphone (adb forwarded PCM stream)
+Exec=micsource-gui
+Icon=io.github.mhasanmuammar.MicSource
+Categories=Audio;AudioVideo;Utility;
+Keywords=microphone;mic;phone;audio;
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.github.mhasanmuammar.MicSource

@@ -68,12 +68,9 @@ done
 # True if the directory contains files created by install.sh (ownership guard)
 data_dir_is_ours() {
     local marker
-    for marker in adb.path apk.path micsource.sock micsource micsource-apk-verify \
-        micsource-tray.py micsource-monitor.py micsource_adb.py \
-        micsource-app.py micsource-gui micsource-build \
-        build-env.path micsource-icon.svg micsource-release.apk \
-        project.path \
-        adb-bundle; do
+    for marker in adb.path micsource.sock micsource micsource-tray.py \
+        micsource-monitor.py micsource_adb.py micsource-app.py micsource-gui \
+        paths.py micsource-icon.svg adb-bundle; do
         if [[ -e "${DATA_DIR}/${marker}" ]]; then
             return 0
         fi

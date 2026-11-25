@@ -5,30 +5,18 @@ MicSource desktop control window (GTK 4 + libadwaita).
 Launched from the app drawer (via the micsource-gui wrapper), the CLI
 (`micsource window`), or the GNOME top-bar tile's "Open Control Window".
 
-The main window shows device + monitoring status (the Monitoring row
-carries a real-time input level bar fed by the background service's
-metering — no extra capture stream), and the same actions as the
-micsource CLI:
+The main window is intentionally one page:
 
-  * Start / Stop the background service (the only audio pump)
-  * Install the staged APK on the device
-  * Open the config folder
-  * Build the APK from source
+  * Device + Monitoring status (the Monitoring row carries a real-time
+    input level bar fed by the background service's metering)
+  * One Start/Stop button for the background service (the only audio pump)
+  * Connected-device selection
+  * Wireless debugging, collapsed until needed
+  * A link to the Android APK on the latest GitHub release
 
-The header menu opens a Preferences dialog (Adw.PreferencesDialog when
-libadwaita >= 1.5 is available, Adw.PreferencesWindow otherwise) with
-instant-apply switches per the GNOME HIG:
-
-  * Auto-start service at login        (systemd user unit enable/disable)
-  * GNOME top-bar tile                 (gnome-extensions enable/disable)
-  * Tray icon (StatusNotifier, opt-in) (XDG autostart entry + spawn/kill —
-    works on StatusNotifier-capable desktops; GNOME users may use the tile)
-  * Virtual microphone / play to       (~/.config/micsource/config.ini;
-    speakers                            applied on next service start)
-
-Also sends desktop notifications on state changes (device link, install
-results, service state). The tray exports StatusNotifierItem and dbusmenu
-through Gio, without Gtk 3 or AppIndicator client bindings.
+The APK is no longer built or installed from the host: GitHub Actions
+publishes it as a release asset. The header menu opens Preferences
+(auto-start, GNOME tile, tray, audio routing) and About.
 """
 import configparser
 import os
@@ -56,19 +44,29 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 APP_TITLE = "MicSource"
 SYSTEMD_UNIT = "micsource.service"
 EXT_ID = "micsource-tile@micsource.local"
-DATA_DIR = os.path.expanduser("~/.local/share/micsource")
-CONFIG_DIR = os.path.expanduser("~/.config/micsource")
-CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
-ADB_PATH_FILE = os.path.join(DATA_DIR, "adb.path")
-CLI_PATH = os.path.join(DATA_DIR, "micsource")
-BUILD_PATH = os.path.join(DATA_DIR, "micsource-build")
-TRAY_PATH = os.path.join(DATA_DIR, "micsource-tray.py")
-TRAY_DESKTOP = os.path.expanduser("~/.config/autostart/micsource-tray.desktop")
-UNIT_FILE = os.path.expanduser(f"~/.config/systemd/user/{SYSTEMD_UNIT}")
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from paths import (DATA_DIR, CONFIG_DIR, CONFIG_PATH, ADB_PATH_FILE,
+                      CLI_PATH, TRAY_PATH, TRAY_DESKTOP, UNIT_FILE,
+                      CONTROL_SOCKET, STATE_DIR, RUNTIME_DIR)
+except Exception:
+    DATA_DIR = os.path.expanduser("~/.local/share/micsource")
+    CONFIG_DIR = os.path.expanduser("~/.config/micsource")
+    CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
+    ADB_PATH_FILE = os.path.join(DATA_DIR, "adb.path")
+    CLI_PATH = os.path.join(DATA_DIR, "micsource")
+    TRAY_PATH = os.path.join(DATA_DIR, "micsource-tray.py")
+    TRAY_DESKTOP = os.path.expanduser("~/.config/autostart/micsource-tray.desktop")
+    UNIT_FILE = os.path.expanduser("~/.config/systemd/user/micsource.service")
+    CONTROL_SOCKET = os.path.join(DATA_DIR, "micsource.sock")
+    STATE_DIR = os.path.expanduser("~/.local/state/micsource")
+    RUNTIME_DIR = os.path.expanduser("/run/user/%d/micsource" % os.getuid())
 
 ANDROID_PKG = "fr.dzx.audiosource"  # Android package (baked into the APK)
 DEVICE_SOCKET = "audiosource"       # device-side socket (RecordThread)
 DEFAULT_HOST_SOCKET = "micsource"   # host side of the adb forward
+RELEASES_URL = "https://github.com/mhasanmuammar/micsource/releases/latest"
 
 last_notified = None
 
@@ -194,14 +192,6 @@ def ensure_forward():
     return rc == 0, err
 
 
-def start_device_service():
-    run_adb(["shell", "am", "force-stop", ANDROID_PKG], timeout=8)
-    rc, _out, err = run_adb(
-        ["shell", "am", "start", f"{ANDROID_PKG}/.MainActivity"], timeout=8
-    )
-    return rc == 0, err
-
-
 def _make_switch_row(title, subtitle):
     """Build a HIG switch row; return (row, watch, get_active, set_active).
 
@@ -222,7 +212,7 @@ def _make_switch_row(title, subtitle):
 
 
 class MicSourceApp(Adw.Application):
-    """Control window (Adwaita): status, service, install, build, prefs."""
+    """Control window (Adwaita): status, service, device, prefs."""
 
     def __init__(self):
         super().__init__(application_id="local.micsource")
@@ -235,12 +225,9 @@ class MicSourceApp(Adw.Application):
         self.row_device = None
         self.row_monitor = None
         self.row_error = None
-        self.log_view = None
-        self.log_buffer = None
-        self.btn_service_start = None
-        self.btn_service_stop = None
-        self.btn_install = None
-        self.btn_build = None
+        self.btn_service = None
+        self._service_active = False
+        self._service_busy = False
         self.entry_pair_address = None
         self.entry_pair_code = None
         self.entry_connect_address = None
@@ -280,23 +267,15 @@ class MicSourceApp(Adw.Application):
         menu_btn.set_menu_model(menu_model)
         header.pack_end(menu_btn)
 
-        self.stack = Adw.ViewStack()
-        self.stack.set_transition_type(Adw.ViewStackTransitionType.SLIDE_LEFT_RIGHT)
-        self.stack.set_transition_duration(250)
-        switcher = Adw.ViewStackSwitcher()
-        switcher.set_stack(self.stack)
-        header.pack_start(switcher)
-
-        # ---- basic page: status, service controls, wireless debugging ----
-        basic = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        basic.set_margin_top(12)
-        basic.set_margin_bottom(12)
-        basic.set_margin_start(12)
-        basic.set_margin_end(12)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page.set_margin_top(12)
+        page.set_margin_bottom(12)
+        page.set_margin_start(12)
+        page.set_margin_end(12)
 
         # ---- status group (Settings-style property rows) -----------------
         status_group = Adw.PreferencesGroup(title="Status")
-        basic.append(status_group)
+        page.append(status_group)
 
         self.row_device = Adw.ActionRow(title="Device", subtitle="checking…")
         self.row_device.add_css_class("property")
@@ -320,110 +299,103 @@ class MicSourceApp(Adw.Application):
         self.row_error.set_visible(False)
         status_group.add(self.row_error)
 
-        # ---- service controls (level pair of equal-width buttons) --------
-        svc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        svc_box.set_homogeneous(True)
-        self.btn_service_start = Gtk.Button(label="Start Service")
-        self.btn_service_start.add_css_class("suggested-action")
-        self.btn_service_start.connect("clicked", self.on_service_start)
-        self.btn_service_stop = Gtk.Button(label="Stop Service")
-        self.btn_service_stop.add_css_class("destructive-action")
-        self.btn_service_stop.connect("clicked", self.on_service_stop)
-        svc_box.append(self.btn_service_start)
-        svc_box.append(self.btn_service_stop)
-        basic.append(svc_box)
+        # ---- one primary action: start/stop the only audio pump -----------
+        self.btn_service = Gtk.Button(label="Start Service")
+        self.btn_service.add_css_class("suggested-action")
+        self.btn_service.connect("clicked", self.on_service_toggle)
+        page.append(self.btn_service)
 
-        # ---- wireless debugging (stays on main page) ----
-        wireless_group = Adw.PreferencesGroup(title="Device & Wireless debugging")
+        # ---- device selection (kept separate from wireless controls) ------
+        device_group = Adw.PreferencesGroup(title="Device")
         self.device_dropdown = Gtk.DropDown.new_from_strings(
             ["Refresh to list connected devices"])
         device_row = Adw.ActionRow(
             title="Connected devices",
             subtitle="USB and already connected Wi-Fi devices")
         device_row.add_suffix(self.device_dropdown)
-        wireless_group.add(device_row)
+        device_group.add(device_row)
         self._action_row_button(
-            wireless_group, "Refresh devices", "List authorized, offline, and unauthorized devices",
+            device_group, "Refresh devices",
+            "List authorized, offline, and unauthorized devices",
             "Refresh", self.on_refresh_devices)
         self._action_row_button(
-            wireless_group, "Use selected device", "MicSource stores the selected ADB serial",
+            device_group, "Use selected device",
+            "MicSource stores the selected ADB serial",
             "Select", self.on_select_device)
+        page.append(device_group)
+
+        # ---- wireless debugging (collapsed until needed) ------------------
+        if hasattr(Adw, "ExpanderRow"):
+            wireless_group = Adw.PreferencesGroup()
+            self.wireless_expander = Adw.ExpanderRow(
+                title="Wireless debugging",
+                subtitle="Pair and connect over Wi-Fi (Android 11+)")
+            wireless_group.add(self.wireless_expander)
+            wireless_container = self.wireless_expander
+        else:  # libadwaita < 1.4
+            wireless_group = Adw.PreferencesGroup(
+                title="Wireless debugging",
+                description="Pair and connect over Wi-Fi (Android 11+)")
+            wireless_container = wireless_group
+
+        def _add_row(container, row):
+            if hasattr(container, "add_row"):
+                container.add_row(row)
+            else:
+                container.add(row)
+
         self.entry_pair_address = Gtk.Entry(placeholder_text="Phone pairing address, e.g. 192.168.1.20:41000")
         self.entry_pair_address.set_hexpand(True)
         pair_address_row = Adw.ActionRow(title="Pairing address")
         pair_address_row.add_suffix(self.entry_pair_address)
-        wireless_group.add(pair_address_row)
+        _add_row(wireless_container, pair_address_row)
+
         self.entry_pair_code = Gtk.Entry(placeholder_text="Six-digit temporary code")
         self.entry_pair_code.set_visibility(False)
         self.entry_pair_code.set_input_purpose(Gtk.InputPurpose.DIGITS)
         self.entry_pair_code.set_max_length(6)
         code_row = Adw.ActionRow(title="Pairing code")
         code_row.add_suffix(self.entry_pair_code)
-        wireless_group.add(code_row)
+        _add_row(wireless_container, code_row)
+
         self._action_row_button(
-            wireless_group, "Pair phone", "Use the pairing port and temporary code shown by Android",
+            wireless_container, "Pair phone",
+            "Use the pairing port and temporary code shown by Android",
             "Pair", self.on_wireless_pair)
+
         self.entry_connect_address = Gtk.Entry(placeholder_text="Separate wireless connection address, e.g. 192.168.1.20:38000")
         self.entry_connect_address.set_hexpand(True)
         connect_address_row = Adw.ActionRow(title="Connection address")
         connect_address_row.add_suffix(self.entry_connect_address)
-        wireless_group.add(connect_address_row)
+        _add_row(wireless_container, connect_address_row)
+
         self._action_row_button(
-            wireless_group, "Connect phone", "Connect and create MicSource's audio socket forward",
+            wireless_container, "Connect phone",
+            "Connect and create MicSource's audio socket forward",
             "Connect", self.on_wireless_connect)
         self._action_row_button(
-            wireless_group, "Find Wi-Fi devices", "Optional ADB mDNS discovery; manual address entry also works",
+            wireless_container, "Find Wi-Fi devices",
+            "Optional ADB mDNS discovery; manual address entry also works",
             "Discover", self.on_wireless_discover)
         self._action_row_button(
-            wireless_group, "Disconnect Wi-Fi device", "Disconnect the entered address",
+            wireless_container, "Disconnect Wi-Fi device",
+            "Disconnect the entered address",
             "Disconnect", self.on_wireless_disconnect)
-        basic.append(wireless_group)
+        page.append(wireless_group)
 
-        # ---- advanced page: install/build/config + activity log ----
-        advanced = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        advanced.set_margin_top(12)
-        advanced.set_margin_bottom(12)
-        advanced.set_margin_start(12)
-        advanced.set_margin_end(12)
-
-        advanced_group = Adw.PreferencesGroup(title="Advanced")
+        # ---- Android app distribution (GitHub Releases) -------------------
+        app_group = Adw.PreferencesGroup(title="Android App")
         self._action_row_button(
-            advanced_group, "Install APK on the Phone",
-            "Installs the staged APK and restores the socket forward",
-            "Install", self.on_install_apk)
-        self._action_row_button(
-            advanced_group, "Build APK from Source",
-            "Compiles the project checkout (first run is slow)",
-            "Build", self.on_build_apk)
-        self._action_row_button(
-            advanced_group, "Open Config Folder", "", "Open", self.on_open_config)
-        advanced.append(advanced_group)
-
-        # activity log
-        self.log_view = Gtk.TextView()
-        self.log_view.set_editable(False)
-        self.log_view.set_cursor_visible(False)
-        self.log_view.set_wrap_mode(Gtk.WrapMode.NONE)
-        self.log_buffer = self.log_view.get_buffer()
-
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_size_request(-1, 110)
-        scroll.set_child(self.log_view)
-
-        advanced.append(Gtk.Label(label="Activity log", xalign=0,
-                                  halign=Gtk.Align.START))
-        advanced.append(Gtk.Frame(child=scroll))
-
-        self.stack.add_titled(basic, "basic", "Basic")
-        self.stack.add_titled(advanced, "advanced", "Advanced")
-        self.stack.set_visible_child_name("basic")
+            app_group, "Install on your phone",
+            "Download the APK from the latest GitHub release",
+            "Download", self.on_download_apk)
+        page.append(app_group)
 
         # Adaptive page: clamped width (HIG single-column layout like
         # gnome-settings) inside a vertical scroll, so the window works
         # at any height instead of overflowing a fixed size.
         clamp = Adw.Clamp(maximum_size=600, tightening_threshold=500)
-        clamp.set_child(self.stack)
+        clamp.set_child(page)
         page_scroll = Gtk.ScrolledWindow()
         page_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         page_scroll.set_child(clamp)
@@ -442,32 +414,23 @@ class MicSourceApp(Adw.Application):
         GLib.timeout_add_seconds(3, self._refresh)
         self._refresh()
 
-    def _button(self, grid, col, row, label, handler):
-        btn = Gtk.Button(label=label)
-        btn.set_hexpand(True)
-        btn.connect("clicked", handler)
-        grid.attach(btn, col, row, 1, 1)
-        return btn
-
     def _action_row_button(self, group, title, subtitle, label, handler):
         """HIG boxed-list row: title/subtitle with a flat button suffix.
 
         The row background activates the same handler (single control per
-        row; the button remains visible for pointer users).
+        row; the button remains visible for pointer users). Works for both
+        Adw.PreferencesGroup and Adw.ExpanderRow containers.
         """
         btn = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
         btn.add_css_class("flat")
-        if handler in (self.on_install_apk, self.on_build_apk):
-            # keep the existing reference for enable/disable during work
-            if handler is self.on_install_apk:
-                self.btn_install = btn
-            else:
-                self.btn_build = btn
         btn.connect("clicked", handler)
         row = Adw.ActionRow(title=title, subtitle=subtitle)
         row.add_suffix(btn)
         row.set_activatable_widget(btn)
-        group.add(row)
+        if hasattr(group, "add_row"):
+            group.add_row(row)
+        else:
+            group.add(row)
 
     # ------------------------------------------------------------------
     # Input level bar (fed by the service; no capture stream)
@@ -509,8 +472,9 @@ class MicSourceApp(Adw.Application):
     # Helpers (main-thread only)
     # ------------------------------------------------------------------
     def log_line(self, line):
-        self.log_buffer.insert(self.log_buffer.get_end_iter(), line.rstrip() + "\n")
-        self.log_view.scroll_mark_onscreen(self.log_buffer.get_insert())
+        # No in-window log: progress goes to the launcher's log (gui.log),
+        # outcomes use toasts, notifications, or an error dialog.
+        _log(line)
 
     def _toast(self, msg):
         """Show a toast in the preferences dialog (or log as fallback)."""
@@ -632,8 +596,16 @@ class MicSourceApp(Adw.Application):
             mon = "off"
         self.row_monitor.set_subtitle(mon)
 
-        self.btn_service_start.set_sensitive(service != "active")
-        self.btn_service_stop.set_sensitive(service == "active")
+        self._service_active = service == "active"
+        if not self._service_busy:
+            self.btn_service.set_label(
+                "Stop Service" if self._service_active else "Start Service")
+            self.btn_service.set_sensitive(True)
+            for css in ("suggested-action", "destructive-action"):
+                self.btn_service.remove_css_class(css)
+            self.btn_service.add_css_class(
+                "destructive-action" if self._service_active
+                else "suggested-action")
 
         # Notification on connect/disconnect transitions (skip first check).
         if last_notified is not None and connected != last_notified:
@@ -988,13 +960,16 @@ class MicSourceApp(Adw.Application):
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
-    def on_service_start(self, _btn):
-        self._service_action("start")
-
-    def on_service_stop(self, _btn):
-        self._service_action("stop")
+    def on_service_toggle(self, _btn):
+        if self._service_busy:
+            return
+        self._service_action("stop" if self._service_active else "start")
 
     def _service_action(self, verb):
+        self._service_busy = True
+        self.btn_service.set_sensitive(False)
+        self.btn_service.set_label(
+            "Stopping…" if verb == "stop" else "Starting…")
         self.log_line(f"service: {verb}…")
         if verb == "start":
             args = ["enable", "--now", "--quiet"]
@@ -1019,6 +994,7 @@ class MicSourceApp(Adw.Application):
         threading.Thread(target=worker, daemon=True).start()
 
     def _service_done(self, verb, ok, out):
+        self._service_busy = False
         if self.window and self.window.get_mapped():
             self._refresh()
         self.log_line(f"service {verb}: {'ok' if ok else 'FAILED'}"
@@ -1029,28 +1005,21 @@ class MicSourceApp(Adw.Application):
         else:
             self._notify("MicSource service error",
                          out or "systemctl failed", "dialog-error")
+            self._error_dialog("Could not change the service",
+                               out or "systemctl failed")
         return False
 
-    def on_install_apk(self, _btn):
-        if self.btn_install is not None and not self.btn_install.get_sensitive():
-            return  # already running (row clicks share the same button)
-        self.log_line("install-apk: running…")
-        self.btn_install.set_sensitive(False)
-
-        def worker():
+    def on_download_apk(self, _btn):
+        """Open the latest GitHub release in the user's browser."""
+        try:
+            Gio.AppInfo.launch_default_for_uri(RELEASES_URL, None)
+        except Exception:
             try:
-                proc = subprocess.run(
-                    ["bash", CLI_PATH, "install-apk"],
-                    capture_output=True, text=True, timeout=240)
-                out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-                code = proc.returncode
-            except FileNotFoundError:
-                code, out = 1, "micsource CLI not found; run install.sh first"
-            except subprocess.TimeoutExpired as exc:
-                code, out = 1, f"install-apk timed out: {exc}"
-            GLib.idle_add(self._install_done, code, out)
-
-        threading.Thread(target=worker, daemon=True).start()
+                subprocess.Popen(["xdg-open", RELEASES_URL])
+            except Exception as exc:
+                self._error_dialog(
+                    "Could not open the browser",
+                    f"Download the APK from:\n{RELEASES_URL}\n\n({exc})")
 
     def _run_cli_async(self, args, callback, *, input_text=None, timeout=20):
         def worker():
@@ -1110,6 +1079,8 @@ class MicSourceApp(Adw.Application):
         else:
             _load_config()
             self._refresh()
+            self._notify("MicSource device selected",
+                         f"Now using {self.device_choices[self.device_dropdown.get_selected()][0]}.")
         return False
 
     def on_wireless_pair(self, _btn):
@@ -1129,6 +1100,9 @@ class MicSourceApp(Adw.Application):
         self.log_line(output or ("Wireless pairing complete." if code == 0 else "Wireless pairing failed."))
         if code:
             self._error_dialog("Wireless pairing failed", output or "Check that the temporary pairing address and code are current.")
+        else:
+            self._notify("Phone paired",
+                         "Now connect with the separate wireless debugging address.")
         return False
 
     def on_wireless_connect(self, _btn):
@@ -1144,6 +1118,8 @@ class MicSourceApp(Adw.Application):
         else:
             _load_config()
             self._refresh()
+            self._notify("Phone connected over Wi-Fi",
+                         "Audio socket forwarding is active.")
         return False
 
     def on_wireless_discover(self, _btn):
@@ -1160,10 +1136,11 @@ class MicSourceApp(Adw.Application):
                     matches.append(match.group(1))
         if len(matches) == 1:
             self.entry_connect_address.set_text(matches[0])
-            self.log_line("One connect endpoint filled in; review it and choose Connect.")
+            self._notify("Found a Wi-Fi device",
+                         "Connection address filled in; review it and choose Connect.")
         elif len(matches) > 1:
             self._error_dialog("Multiple Wi-Fi devices found",
-                               "Choose the desired _adb-tls-connect._tcp endpoint from the log and enter it in Connection address.\n\n" + "\n".join(matches))
+                               "Use the address of the phone you want in Connection address:\n\n" + "\n".join(matches))
         elif code:
             self._error_dialog("Discovery unavailable", output or "This ADB build may not support mDNS discovery; enter the phone's connection address manually.")
         return False
@@ -1180,88 +1157,8 @@ class MicSourceApp(Adw.Application):
         else:
             _load_config()
             self._refresh()
-        return False
-
-    def _install_done(self, code, out):
-        self.btn_install.set_sensitive(True)
-        short = (out or "unknown error")[-1200:]
-        if code == 0:
-            self.log_line("install-apk: OK")
-            self._notify("MicSource install complete",
-                         "APK installed on the device; forwarding configured.")
-        else:
-            self.log_line(f"install-apk FAILED:\n{short}")
-            self._notify("MicSource install failed", short[:200], "dialog-error")
-            self._error_dialog("install-apk failed", short)
-        if self.window and self.window.get_mapped():
-            self._refresh()
-        return False
-
-    def on_open_config(self, _btn):
-        try:
-            subprocess.Popen(["xdg-open", CONFIG_DIR])
-        except FileNotFoundError:
-            self.log_line(f"config folder: {CONFIG_DIR}")
-
-    def on_build_apk(self, _btn):
-        if self.btn_build is not None and not self.btn_build.get_sensitive():
-            return  # already running (row clicks share the same button)
-        self.log_line("build-apk: running Gradle…"
-                      " (first run can take several minutes)")
-        self.btn_build.set_sensitive(False)
-
-        def worker():
-            try:
-                proc = subprocess.run(
-                    ["bash", BUILD_PATH], capture_output=True, text=True,
-                    timeout=1800)
-                out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-                code = proc.returncode
-            except FileNotFoundError:
-                code, out = 1, "micsource-build helper not found; run install.sh"
-            except subprocess.TimeoutExpired:
-                code, out = 1, "build-apk timed out"
-            install_code = None
-            install_out = ""
-            if code == 0:
-                # The build script already staged the APK; install it next.
-                try:
-                    iproc = subprocess.run(
-                        ["bash", CLI_PATH, "install-apk"],
-                        capture_output=True, text=True, timeout=240)
-                    install_out = ((iproc.stdout or "") + (iproc.stderr or "")).strip()
-                    install_code = iproc.returncode
-                except subprocess.TimeoutExpired:
-                    install_code, install_out = 1, "install-apk timed out"
-                except FileNotFoundError:
-                    install_code, install_out = 1, "micsource CLI not found"
-            GLib.idle_add(self._build_done, code, out, install_code, install_out)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _build_done(self, code, out, install_code, install_out):
-        self.btn_build.set_sensitive(True)
-        short = (out or "unknown error")[-1500:]
-        if code == 0:
-            self.log_line("build-apk: OK (APK staged)")
-            self._notify("MicSource build complete",
-                         "APK built from source and staged.")
-            if install_code is not None:
-                if install_code == 0:
-                    self.log_line("install-apk: OK (device install + forward)")
-                    self._notify("MicSource install complete",
-                                 "New APK installed on the device.")
-                else:
-                    self.log_line(f"install-apk FAILED:\n{install_out[-800:]}")
-                    self._notify("MicSource device install failed",
-                                 install_out[-200:] or "see the activity log",
-                                 "dialog-error")
-            if self.window and self.window.get_mapped():
-                self._refresh()
-            return False
-        self.log_line(f"build-apk FAILED:\n{short}")
-        self._notify("MicSource build failed", short[:200], "dialog-error")
-        self._error_dialog("build-apk failed", short)
+            self._notify("Wi-Fi device disconnected",
+                         "MicSource is no longer connected to that address.")
         return False
 
 

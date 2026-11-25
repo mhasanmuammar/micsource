@@ -1,0 +1,90 @@
+id: io.github.mhasanmuammar.MicSource
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: micsource-gui
+
+finish-args:
+  - --share=network
+  - --socket=pulseaudio
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --device=usb
+  - --require-version=1.16.0
+  - --filesystem=xdg-data/gnome-shell/extensions
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.gnome.Shell.Extensions
+
+modules:
+  - name: adb
+    buildsystem: simple
+    build-commands:
+      - git clone https://github.com/mhasanmuammar/android-platform-tools.git /tmp/adb-src
+      - cd /tmp/adb-src
+      - ./configure --prefix=/app --without-jack --without-tools-common --without-sdkmanager
+      - make -j$(nproc)
+      - make install
+    sources:
+      - type: git
+        url: https://github.com/mhasanmuammar/android-platform-tools.git
+        tag: platform-tools-34.0.0
+  - name: pulseaudio-tools
+    buildsystem: meson
+    config-opts:
+      - -Ddaemon=false
+      - -Dman=false
+      - -Dtests=false
+      - -Dbluez5=disabled
+      - -Davahi=disabled
+      - -Dbash-completion=disabled
+      - -Dgtk=disabled
+      - -Dqt=disabled
+      - -Dsystemd=disabled
+      - -Dnative-tests=false
+      - -Ddoc=disabled
+      - -Dofono=disabled
+      - -Dlirc=disabled
+      - -Dgconf=disabled
+      - -Dorc=disabled
+      - -Dwebrtc-aec=disabled
+      - -Ddbus=disabled
+      - -Dx11=disabled
+      - -Dsampling-profiler=disabled
+      - -Djack=disabled
+      - -Dudev=disabled
+      - -Dalsa=disabled
+      - -Doss=disabled
+      - -Drcp=disabled
+      - -Dopenrc=disabled
+      - -Dopensles=disabled
+      - -Dembyte=disabled
+      - -Dlibsamplerate=disabled
+      - -Dspeex=disabled
+      - -Dspeexdsp=disabled
+      - -Dasyncns=disabled
+      - -Dgdbus=disabled
+      - -Dintrospection=disabled
+    sources:
+      - type: archive
+        url: https://freedesktop.org/software/pulseaudio/releases/pulseaudio-17.0.tar.xz
+        sha256: 8c9bf6e4804e1c8b7c4a7e3c0e4f5a6b8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4
+  - name: micsource
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 micsource-gui /app/bin/micsource-gui
+      - install -Dm755 micsource /app/bin/micsource
+      - install -Dm644 micsource-app.py /app/lib/micsource/micsource-app.py
+      - install -Dm644 micsource-tray.py /app/lib/micsource/micsource-tray.py
+      - install -Dm644 micsource-monitor.py /app/lib/micsource/micsource-monitor.py
+      - install -Dm644 micsource_adb.py /app/lib/micsource/micsource_adb.py
+      - install -Dm644 paths.py /app/lib/micsource/paths.py
+      - install -Dm644 gnome/* /app/share/micsource/gnome/
+      - install -Dm644 io.github.mhasanmuammar.MicSource.desktop /app/share/applications/io.github.mhasanmuammar.MicSource.desktop
+      - install -Dm644 io.github.mhasanmuammar.MicSource.metainfo.xml /app/share/metainfo/io.github.mhasanmuammar.MicSource.metainfo.xml
+      - install -Dm644 io.github.mhasanmuammar.MicSource.svg /app/share/icons/hicolor/scalable/apps/io.github.mhasanmuammar.MicSource.svg
+    sources:
+      - type: dir
+        path: .
+    subdir: flatpak

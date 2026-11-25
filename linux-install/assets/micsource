@@ -12,7 +12,6 @@
 #   status       Show service / device / socket-forward status
 #   run          Foreground: set up the forward and stream audio until Ctrl+C
 #   tray         Launch the system tray icon (background)
-#   install-apk  (Re)install the staged APK on the device + set up forward
 #   devices      List USB and wireless ADB devices
 #   device-select SERIAL  Select the device used by MicSource
 #   wireless-pair IP:PORT Pair using the phone's temporary pairing endpoint
@@ -24,16 +23,13 @@
 set -euo pipefail
 
 APP_NAME="micsource"
-DATA_DIR="${HOME}/.local/share/micsource"
-CONFIG_DIR="${HOME}/.config/micsource"
-APK_STAGED="${DATA_DIR}/micsource-release.apk"
+DATA_DIR="${MICSOURCE_DATA_DIR:-${HOME}/.local/share/micsource}"
+CONFIG_DIR="${MICSOURCE_CONFIG_DIR:-${HOME}/.config/micsource}"
 TRAY_PATH="${DATA_DIR}/micsource-tray.py"
 MONITOR_PATH="${DATA_DIR}/micsource-monitor.py"
 GUI_PATH="${DATA_DIR}/micsource-gui"
-BUILD_PATH="${DATA_DIR}/micsource-build"
-CTL_SOCK="${DATA_DIR}/micsource.sock"
+CTL_SOCK="${MICSOURCE_RUNTIME_DIR:-${DATA_DIR}}/micsource.sock"
 SYSTEMD_UNIT="${HOME}/.config/systemd/user/micsource.service"
-ANDROID_PKG="fr.dzx.audiosource" # Android package (baked into the APK)
 DEVICE_SOCKET="audiosource"      # device-side socket (RecordThread)
 HOST_SOCKET="micsource"          # host side of the adb forward
 
@@ -68,8 +64,6 @@ Commands:
   run          Foreground: set up the forward and stream audio until Ctrl+C
   tray         Launch the system tray icon (background)
   window       Open the desktop control window
-  build-apk    Build the APK from source and stage it (uses managed JDK/SDK)
-  install-apk  (Re)install the staged APK on the device + set up forward
   devices      List USB and wireless ADB devices
   device-select SERIAL  Select the device used by MicSource ('none' clears it)
   wireless-pair IP:PORT Pair using the phone's temporary pairing endpoint
@@ -384,14 +378,6 @@ one_shot_run() {
     exec python3 "${MONITOR_PATH}" --run
 }
 
-build_apk() {
-    if [[ ! -f "${BUILD_PATH}" ]]; then
-        err "Build helper not installed; run install.sh first."
-        exit 1
-    fi
-    exec bash "${BUILD_PATH}"
-}
-
 launch_window() {
     if [[ ! -f "${GUI_PATH}" ]]; then
         err "Control window not installed; run install.sh first."
@@ -407,68 +393,6 @@ launch_tray() {
     fi
     "${TRAY_PATH}" --tray >/dev/null 2>&1 &
     info "Tray launched."
-}
-
-device_install() {
-    local adb_bin
-    adb_bin="$(resolve_adb)"
-    if [[ -z "$adb_bin" ]]; then
-        err "adb not found; run install.sh to install the adb bundle."
-        exit 1
-    fi
-    if [[ ! -f "${APK_STAGED}" ]]; then
-        err "No staged APK at ${APK_STAGED}."
-        info "Place a prebuilt APK there (see docs/USER.md) or re-run install.sh after building."
-        exit 1
-    fi
-    resolve_adb_server_port >/dev/null || exit 2
-    if ! "${DATA_DIR}/micsource-apk-verify" "${APK_STAGED}"; then
-        err "Refusing to install an APK without a valid signature."
-        exit 1
-    fi
-    local install_out=""
-    if ! install_out="$(adb_run install -r -t "${APK_STAGED}" 2>&1)"; then
-        if [[ "$install_out" == *INSTALL_FAILED_UPDATE_INCOMPATIBLE* ]]; then
-            err "The device already has a differently-signed ${ANDROID_PKG}"
-            err "(e.g. the upstream release build); our APK cannot update it."
-            warn "Replacing it will UNINSTALL the existing app from the device"
-            warn "(together with its settings data)."
-            local ans=""
-            ask "Uninstall the existing app and install ours? [y/N] "
-            read -r ans || true
-            case "$ans" in
-            y | Y | yes)
-                if ! adb_run uninstall "${ANDROID_PKG}"; then
-                    err "Could not uninstall the existing app."
-                    exit 1
-                fi
-                if ! adb_run install -r -t "${APK_STAGED}"; then
-                    err "adb install failed even after uninstall."
-                    exit 1
-                fi
-                ;;
-            *)
-                info "Device install skipped. The existing (differently-signed)"
-                info "app on the device keeps working normally."
-                exit 1
-                ;;
-            esac
-        else
-            err "adb install failed: ${install_out}"
-            exit 1
-        fi
-    fi
-    adb_run shell am force-stop "${ANDROID_PKG}" >/dev/null 2>&1 || true
-    adb_run shell am start -n "${ANDROID_PKG}/.MainActivity" --ez start true \
-        >/dev/null 2>&1 || true
-    adb_run forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
-    if adb_run forward "localabstract:${HOST_SOCKET}" "localabstract:${DEVICE_SOCKET}"; then
-        info "Forward active: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"
-    else
-        err "Could not create the socket forward (app not running?)."
-        exit 1
-    fi
-    info "APK installed."
 }
 
 open_config() {
@@ -488,8 +412,6 @@ status) query_status ;;
 run) one_shot_run ;;
 tray) launch_tray ;;
 window) launch_window ;;
-build-apk) build_apk ;;
-install-apk) device_install ;;
 devices) list_devices ;;
 device-select) select_device "${2:-}" ;;
 wireless-pair) wireless_pair "${2:-}" ;;

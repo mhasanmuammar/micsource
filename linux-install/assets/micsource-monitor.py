@@ -28,11 +28,19 @@ from micsource_adb import (
     validate_server_port,
 )
 
-DATA_DIR = os.path.expanduser("~/.local/share/micsource")
-CONFIG_DIR = os.path.expanduser("~/.config/micsource")
-CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
-ADB_PATH_FILE = os.path.join(DATA_DIR, "adb.path")
-CONTROL_SOCKET = os.path.join(DATA_DIR, "micsource.sock")
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from paths import (DATA_DIR, CONFIG_DIR, CONFIG_PATH, ADB_PATH_FILE,
+                      CONTROL_SOCKET, STATE_DIR, RUNTIME_DIR)
+except Exception:
+    DATA_DIR = os.path.expanduser("~/.local/share/micsource")
+    CONFIG_DIR = os.path.expanduser("~/.config/micsource")
+    CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
+    ADB_PATH_FILE = os.path.join(DATA_DIR, "adb.path")
+    CONTROL_SOCKET = os.path.join(DATA_DIR, "micsource.sock")
+    STATE_DIR = os.path.expanduser("~/.local/state/micsource")
+    RUNTIME_DIR = os.path.expanduser("/run/user/%d/micsource" % os.getuid())
 
 ANDROID_PKG = "fr.dzx.audiosource"  # Android package (baked into the APK)
 DEVICE_SOCKET = "audiosource"       # Device-side socket (RecordThread)

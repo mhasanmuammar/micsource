@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mhasanmuammar.MicSource</id>
+  <name>MicSource</name>
+  <summary>Use your Android phone as a PC microphone</summary>
+  <description>
+    <p>
+      MicSource turns your Android phone's microphone into a real input device
+      on your Linux computer. The phone records audio and streams it over an
+      adb-forwarded socket, where it appears as a system microphone usable by
+      any application.
+    </p>
+    <p>
+      Supports USB and Wi-Fi (Wireless debugging, Android 11+). Exposes the
+      phone mic as a virtual input device ("phone-mic") and optionally plays
+      audio through the PC speakers.
+    </p>
+  </description>
+  <developer id="io.github.mhasanmuammar">
+    <name>MicSource contributors</name>
+  </developer>
+  <launchable type="desktop-id">io.github.mhasanmuammar.MicSource.desktop</launchable>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <url type="homepage">https://github.com/mhasanmuammar/micsource</url>
+  <url type="bugtracker">https://github.com/mhasanmuammar/micsource/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/mhasanmuammar/micsource/master/assets/screenshot.png</image>
+      <caption>MicSource control window</caption>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.5" date="2026-11-25">
+      <description>
+        <p>Initial Flatpak release of the Linux host suite.</p>
+      </description>
+    </release>
+  </releases>
+</component>

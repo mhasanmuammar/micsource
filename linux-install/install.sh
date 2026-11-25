@@ -6,11 +6,10 @@
 # app) into your user account (no root). The payload programs are real
 # files under linux-install/assets/ (the source of truth); this script
 # copies them into place instead of embedding heredocs:
-#   * payload assets -> ~/.local/share/micsource/ (CLI, GUI wrapper, build
-#     helper, APK verifier, app/tray/monitor Python) + project.path pointing back at the
-#     checkout
-#   * adb (bundled if missing) + optional portable JDK 17 / Android SDK
-#   * builds or stages the APK and installs it on the connected device
+#   * payload assets -> ~/.local/share/micsource/ (CLI, GUI wrapper,
+#     app/tray/monitor Python)
+#   * adb (bundled if missing)
+#   * optional adb forward + Android-app start on the connected device
 #   * control window, tray script, CLI, systemd user service
 #   * app-drawer launcher + icons + config (existing config is preserved)
 #   * optional GNOME quick settings pill (extension, GNOME Shell 47+)
@@ -38,11 +37,7 @@ DESKTOP_FILE="${APPS_DIR}/${APP_NAME}.desktop"
 UNIT_FILE="${SYSTEMD_USER_DIR}/${APP_NAME}.service"
 CLI_PATH="${DATA_DIR}/${APP_NAME}"
 ADB_PATH_FILE="${DATA_DIR}/adb.path"
-APK_PATH_FILE="${DATA_DIR}/apk.path"
-ENV_PATH_FILE="${DATA_DIR}/build-env.path"
-BUILD_ENV_DIR="${DATA_DIR}/build-env"
 ADB_BUNDLE_DIR="${DATA_DIR}/adb-bundle"
-STAGED_APK="${DATA_DIR}/micsource-release.apk"
 PLATFORM_TOOLS_VERSION="37.0.1"
 PLATFORM_TOOLS_SHA256="d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1"
 PLATFORM_TOOLS_SHA1="477254aa5f903c15cf51001717bdf347fb6b53e0"
@@ -217,8 +212,8 @@ step_sanity() {
 
 step_assets() {
     local f failed=0
-    for f in micsource micsource-gui micsource-build micsource-apk-verify \
-        micsource-app.py micsource-tray.py micsource-monitor.py micsource_adb.py; do
+    for f in micsource micsource-gui paths.py micsource-app.py micsource-tray.py \
+        micsource-monitor.py micsource_adb.py; do
         if [[ ! -f "${INSTALL_DIR}/assets/${f}" ]]; then
             err "Missing installer asset: ${INSTALL_DIR}/assets/${f}"
             failed=1
@@ -233,17 +228,12 @@ step_assets() {
         return 1
     fi
     chmod 755 "${DATA_DIR}/micsource" "${DATA_DIR}/micsource-gui" \
-        "${DATA_DIR}/micsource-build" "${DATA_DIR}/micsource-apk-verify" \
         "${DATA_DIR}/micsource-app.py" \
         "${DATA_DIR}/micsource-tray.py" "${DATA_DIR}/micsource-monitor.py" \
         "${DATA_DIR}/micsource_adb.py" || {
         err "Failed to make the payload files executable in ${DATA_DIR}"
         return 1
     }
-    if ! printf '%s\n' "${PROJECT_ROOT}" >"${DATA_DIR}/project.path"; then
-        err "Failed to write ${DATA_DIR}/project.path"
-        return 1
-    fi
     ok "Payload files installed: ${DATA_DIR}"
 }
 
@@ -356,173 +346,6 @@ read_device_serial() {
     printf '%s\n' "${serial}"
 }
 
-env_set_if_portable() {
-    # Source the installer-managed JDK/SDK so gradle sees them.
-    if [[ -f "${ENV_PATH_FILE}" ]]; then
-        # shellcheck disable=SC1090
-        source "${ENV_PATH_FILE}"
-        export JAVA_HOME ANDROID_HOME
-    fi
-}
-
-step_build_env() {
-    local jdk17_ok=0
-    if have_cmd java; then
-        local major
-        major="$(java -version 2>&1 | head -1 | grep -oP '"\K[0-9]+' | head -1)"
-        if [[ -n "${major}" && "${major}" -ge 17 ]]; then
-            jdk17_ok=1
-        fi
-    fi
-    local sdk_ok=0
-    if [[ -z "${ANDROID_HOME:-}" && -f "${PROJECT_ROOT}/local.properties" ]]; then
-        ANDROID_HOME="$(grep -oP '^sdk\.dir=\K.*' "${PROJECT_ROOT}/local.properties" 2>/dev/null | head -1 || true)"
-    fi
-    if [[ -n "${ANDROID_HOME:-}" && -d "${ANDROID_HOME}" ]]; then sdk_ok=1; fi
-
-    if grep -q JAVA_HOME "${ENV_PATH_FILE}" 2>/dev/null; then
-        ok "Portable build environment already installed (${BUILD_ENV_DIR})."
-        return 0
-    fi
-
-    if [[ "${jdk17_ok}" -eq 1 && "${sdk_ok}" -eq 1 ]]; then
-        ok "System JDK 17 + Android SDK already available."
-        return 0
-    fi
-
-    warn "No complete JDK 17 + Android SDK build environment found."
-    warn "(Only needed to BUILD the APK from source; a prebuilt APK can be staged instead.)"
-    if ! confirm "Download and install a portable Temurin JDK 17 + Android cmdline-tools?"; then
-        info "Skipping build environment; re-run install.sh later to build from source."
-        return 2
-    fi
-    local arch
-    case "$(uname -m)" in
-    x86_64) arch="x64" ;;
-    aarch64 | arm64) arch="aarch64" ;;
-    *)
-        err "Unsupported architecture for the portable JDK: $(uname -m)"
-        return 1
-        ;;
-    esac
-    local jdk_url="https://api.adoptium.net/v3/binary/latest/17/ga/linux/${arch}/jdk/hotspot/normal/eclipse"
-    local tools_url="https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
-    local scratch jdk_file tools_file tools_tmp
-    scratch="$(mktemp -d "${DATA_DIR}/.dl.XXXXXX")" || {
-        err "Could not create a download directory under ${DATA_DIR}."
-        return 1
-    }
-    TMP_DIRS+=("${scratch}")
-    jdk_file="${scratch}/jdk.tar.gz"
-    tools_file="${scratch}/cmdline-tools.zip"
-    tools_tmp="${scratch}/tools"
-    mkdir -p "${BUILD_ENV_DIR}/jdk" "${BUILD_ENV_DIR}/android-sdk"
-
-    info "Downloading JDK 17 (${arch})..."
-    if ! fetch "${jdk_url}" "${jdk_file}"; then
-        err "JDK download failed."
-        return 1
-    fi
-    tar -xzf "${jdk_file}" -C "${BUILD_ENV_DIR}/jdk" --strip-components 1 || {
-        err "JDK unpack failed."
-        return 1
-    }
-    rm -f -- "${jdk_file}"
-
-    info "Downloading Android cmdline-tools..."
-    if ! fetch "${tools_url}" "${tools_file}"; then
-        err "cmdline-tools download failed."
-        return 1
-    fi
-    mkdir -p "${tools_tmp}"
-    unzip -q "${tools_file}" -d "${tools_tmp}" || {
-        err "cmdline-tools unpack failed."
-        return 1
-    }
-    rm -f -- "${tools_file}"
-    mkdir -p "${BUILD_ENV_DIR}/android-sdk/cmdline-tools"
-    rm -rf "${BUILD_ENV_DIR}/android-sdk/cmdline-tools/latest"
-    mv -T "${tools_tmp}/cmdline-tools" \
-        "${BUILD_ENV_DIR}/android-sdk/cmdline-tools/latest"
-    rm -rf "${scratch}" # success: drop the scratch now (the trap is the backstop)
-
-    info "Installing SDK packages (licenses auto-accepted)..."
-    yes | "${BUILD_ENV_DIR}/android-sdk/cmdline-tools/latest/bin/sdkmanager" \
-        --sdk_root="${BUILD_ENV_DIR}/android-sdk" \
-        "platform-tools" "platforms;android-34" "build-tools;34.0.0" \
-        >/dev/null 2>&1 || true
-
-    {
-        echo "JAVA_HOME=${BUILD_ENV_DIR}/jdk"
-        echo "ANDROID_HOME=${BUILD_ENV_DIR}/android-sdk"
-    } >"${ENV_PATH_FILE}"
-
-    if [[ ! -f "${PROJECT_ROOT}/local.properties" ]]; then
-        printf 'sdk.dir=%s\n' "${BUILD_ENV_DIR}/android-sdk" \
-            >"${PROJECT_ROOT}/local.properties"
-    fi
-    ok "Portable build environment installed (${BUILD_ENV_DIR})."
-}
-
-step_apk() {
-    local candidates=(
-        "${PROJECT_ROOT}/app/build/outputs/apk/release/app-release.apk"
-        "${PROJECT_ROOT}/app/build/outputs/apk/release/micsource-release.apk"
-        "${PROJECT_ROOT}/app/build/outputs/apk/debug/app-debug.apk"
-        "${STAGED_APK}"
-    )
-    local apk="" c
-    for c in "${candidates[@]}"; do
-        if [[ -f "$c" ]]; then
-            apk="$c"
-            break
-        fi
-    done
-
-    if [[ -z "${apk}" ]]; then
-        warn "No MicSource APK found (prebuilt or previous build output)."
-        if ! confirm "Build it now from source with Gradle?"; then
-            info "Skipping APK staging; place a prebuilt APK and re-run install.sh."
-            return 2
-        fi
-        env_set_if_portable
-        if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
-            export PATH="${JAVA_HOME}/bin:${PATH}"
-        fi
-        if [[ ! -f "${PROJECT_ROOT}/gradlew" ]]; then
-            err "${PROJECT_ROOT}/gradlew not found."
-            return 1
-        fi
-        local task="assembleDebug"
-        [[ -f "${PROJECT_ROOT}/keystore.properties" ]] && task="assembleRelease"
-        info "Running ./gradlew ${task} (this can take a few minutes)..."
-        (cd "${PROJECT_ROOT}" && ./gradlew "${task}" --no-daemon) || {
-            err "Gradle build failed (is a JDK 17 configured?)."
-            return 1
-        }
-        for c in \
-            "${PROJECT_ROOT}/app/build/outputs/apk/release/app-release.apk" \
-            "${PROJECT_ROOT}/app/build/outputs/apk/release/micsource-release.apk" \
-            "${PROJECT_ROOT}/app/build/outputs/apk/debug/app-debug.apk"; do
-            if [[ -f "$c" ]]; then
-                apk="$c"
-                break
-            fi
-        done
-        if [[ -z "${apk}" ]]; then
-            err "Build finished but no APK output found."
-            return 1
-        fi
-    fi
-
-    # Avoid "cp: same file" noise when the staged APK is the only candidate.
-    if [[ "$(readlink -f "${apk}")" != "$(readlink -f "${STAGED_APK}")" ]]; then
-        cp -f "${apk}" "${STAGED_APK}"
-    fi
-    printf '%s\n' "${apk}" >"${APK_PATH_FILE}"
-    ok "APK staged: ${STAGED_APK} (from ${apk})"
-}
-
 step_device() {
     if [[ "${NO_DEVICE}" -eq 1 ]]; then
         info "--no-device: skipping device install and forwarding."
@@ -567,29 +390,22 @@ step_device() {
         info "Wireless debugging (Developer options) from the control window or:"
         info "  micsource wireless-pair IP:PORT      # code shown by the phone"
         info "  micsource wireless-connect IP:PORT    # separate connect endpoint"
-        info "Then run:"
-        info "  micsource install-apk   # install + forward"
+        info "Install the MicSource APK on the phone from:"
+        info "  https://github.com/mhasanmuammar/micsource/releases/latest"
         return 2
     fi
-    if ! "${DATA_DIR}/micsource-apk-verify" "${STAGED_APK}"; then
-        err "Refusing to install an APK without a valid signature."
-        return 1
-    fi
-    info "Installing APK on the device..."
-    if "${adb_bin}" -P "${adb_port}" "${adb_target[@]}" install -r -t "${STAGED_APK}"; then
-        ok "APK installed on device."
-    else
-        warn "adb install failed; the device may refuse unknown signers."
-    fi
-    "${adb_bin}" -P "${adb_port}" "${adb_target[@]}" shell am start -n "${ANDROID_PKG}/.MainActivity" \
-        --ez start true >/dev/null 2>&1 || true
+    # The APK is distributed through GitHub Releases and installed on the
+    # phone itself; the host only starts it (if present) and forwards the
+    # device socket.
+    "${adb_bin}" -P "${adb_port}" "${adb_target[@]}" shell am start \
+        -n "${ANDROID_PKG}/.MainActivity" --ez start true >/dev/null 2>&1 || true
     if "${adb_bin}" -P "${adb_port}" "${adb_target[@]}" forward "localabstract:${HOST_SOCKET}" \
         "localabstract:${DEVICE_SOCKET}" >/dev/null 2>&1; then
         ok "adb forward set: localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET}"
         return 0
     fi
     warn "adb forward failed; the host cannot reach the phone mic yet."
-    info "  micsource install-apk   # retry install + forward"
+    info "Run 'micsource start' after installing the APK from GitHub Releases."
     return 1
 }
 
@@ -814,8 +630,6 @@ main() {
     step_sanity # bare: a failed sanity check exits immediately (nothing installed yet)
     run_step assets step_assets
     run_step adb step_adb
-    run_step build_env step_build_env
-    run_step apk step_apk
     run_step device step_device
     run_step config step_config
     run_step desktop step_desktop
