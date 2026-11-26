@@ -16,3 +16,7 @@ __pycache__/
 /builddir/
 /builddir-*/
 /repo/
+
+# Internal agent context (not project files)
+.kilo/
+.opencode_context/
