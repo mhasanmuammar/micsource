@@ -14,7 +14,12 @@ speakers.
    it needs Android 11 or newer.)
 2. Connect the phone to your Linux PC with a USB cable.
 3. On the phone, accept the "Allow USB debugging?" dialog when it appears.
-4. Open a terminal on your PC and run the installer:
+4. Install the phone app. On the phone, open
+   <https://github.com/mhasanmuammar/micsource/releases/latest>, download the
+   latest `micsource-*.apk`, and open it to install (allow your browser to
+   install unknown apps if Android asks). The PC installer does not build or
+   install the APK.
+5. Open a terminal on your PC and run the installer:
 
    ```bash
    cd linux-install
@@ -22,7 +27,7 @@ speakers.
    ./install.sh
    ```
 
-5. When asked about `adb`, say **Yes** if you don't already have it installed.
+6. When asked about `adb`, say **Yes** if you don't already have it installed.
    The installer stores Google's platform-tools privately under
    `~/.local/share/micsource/adb-bundle/`. MicSource uses its own local ADB
    server port (5038); it does not replace your system `adb` or add a bundled
@@ -32,7 +37,7 @@ speakers.
    (KDE/XFCE/other desktops), run `./install.sh --with-tray` or enable it
    from the app: **MicSource → Preferences → Startup & Panel → Tray Icon**
    (the installer tells you the binding package when it is missing).
-6. When the installer finishes, launch **MicSource** from your app drawer —
+7. When the installer finishes, launch **MicSource** from your app drawer —
    the MicSource control window opens, showing the status and control buttons.
 
 ## Connecting over Wi-Fi (Wireless debugging)
@@ -91,12 +96,12 @@ has **Pair**, **Connect**, **Refresh devices**, **Discover**, and
   the control window. It shows whether your phone is connected (its
   **Device** row shows the phone's model name once known), and whether audio
   is being forwarded (the **Monitoring** row has a live input-level bar).
-- Use the window buttons: **Start Service** / **Stop Service** (this starts and
-  stops the actual microphone forwarding — the background service is the only
-  thing that streams audio), **Install APK on Device**, **Build APK (from
-  source)** (builds and installs in one click), and **Open Config Folder**.
-  The window itself cannot stream; it only shows status and controls the
-  service.
+- Use the window's single **Start Service** / **Stop Service** button (it
+  starts and stops the actual microphone forwarding — the background service
+  is the only thing that streams audio). The same page has device selection,
+  collapsed wireless controls, and a **Download** row that opens the latest
+  Android APK release. The window itself cannot stream; it only shows status
+  and controls the service.
 - Your desktop shows a notification when the phone connects or disconnects
   (from the background monitor service).
 - On GNOME, the **quick settings pill** is the control surface (next to the
@@ -139,8 +144,6 @@ micsource status         # service / adb device / socket-forward status
 micsource run            # foreground: forward + play audio until Ctrl+C
 micsource tray           # launch the tray icon
 micsource window         # open the desktop control window
-micsource build-apk      # build the APK from source and stage it
-micsource install-apk    # (re)install the APK on the phone and set up the forward
 micsource devices        # list USB and Wi-Fi devices (adb devices -l)
 micsource device-select SERIAL   # select which phone MicSource uses ('none' clears)
 micsource wireless-pair IP:PORT  # pair via Wireless debugging (asks for the code)
@@ -215,7 +218,7 @@ there unless you uninstall it separately).
 | Problem | Fix |
 |---|---|
 | Tray icon is visible, but clicking it opens no menu | Known unfinished issue in the StatusNotifier tray. It is documented for a later development cycle; use the MicSource control window or GNOME top-bar tile for controls in the meantime. |
-| Tray icon never shows "connected" | Make sure USB debugging is authorized on the phone and the screen is unlocked. The tray is opt-in: enable it from the app (**Preferences → Startup & Panel → Tray Icon**). The desktop session must provide a StatusNotifier watcher; GNOME additionally needs the **KStatusNotifier / AppIndicator shell extension** (`appindicatorsupport@rgcjonas.gmail.com`) because GNOME has no built-in StatusNotifier area. Watcher errors are reported in the toggle's toast / Activity log and `~/.local/share/micsource/tray.log`. On GNOME, the top-bar tile works without the extension. |
+| Tray icon never shows "connected" | Make sure USB debugging is authorized on the phone and the screen is unlocked. The tray is opt-in: enable it from the app (**Preferences → Startup & Panel → Tray Icon**). The desktop session must provide a StatusNotifier watcher; GNOME additionally needs the **KStatusNotifier / AppIndicator shell extension** (`appindicatorsupport@rgcjonas.gmail.com`) because GNOME has no built-in StatusNotifier area. Watcher errors appear in a toast and in `~/.local/share/micsource/tray.log`. On GNOME, the top-bar tile works without the extension. |
 | Launching "MicSource" shows a notification about PyGObject | The window needs GTK 4 + libadwaita: `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1` (Debian/Ubuntu) or `sudo dnf install python3-gobject` (Fedora), then launch MicSource again. |
 | No sound from the PC speakers | That is the default — the phone audio only appears as the `phone-mic` input device. Set `play_to_speakers = true` in the config (then check `paplay`/`aplay` is installed and your volume). |
 | "phone-mic" missing from `pactl` / app pickers | Monitoring must be running — the device is created when audio forwarding starts and removed when it stops. If monitoring is on but the device is missing, check `pactl` exists; config flags: set `[audio] virtual_mic = true`.
@@ -232,14 +235,14 @@ there unless you uninstall it separately).
 | `MicSource ADB server port 5038 is unavailable` | Another process holds MicSource's isolated ADB port. Free the port or set a different one in `server_port` (never `5037` — that is reserved for the system ADB server, which MicSource leaves alone). |
 | `micsource: command not found` | Add `~/.local/bin` to your PATH: `export PATH="$HOME/.local/bin:$PATH"`. |
 | Service won't start | Run `systemctl --user status micsource` and `journalctl --user -u micsource -f` for logs. |
-| Installer can't build the APK | First run of Gradle downloads dependencies and needs network. If it still fails, re-run `./install.sh` and accept the "portable build environment" prompt, check `journalctl`/the activity log in the control window, or place a prebuilt APK at `~/.local/share/micsource/micsource-release.apk`. |
-| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` on install | The device already runs a differently-signed copy of the app (e.g. the upstream release build). Our debug-signed APK cannot update it; `install-apk` will offer to uninstall the existing app first (its settings are lost) — or keep using the existing app. |
+| Can't download or install the Android APK | Open <https://github.com/mhasanmuammar/micsource/releases/latest> on the phone. If Android blocks the install, allow your browser/file manager to install unknown apps, then open the downloaded `micsource-*.apk` again. The PC installer never builds or installs the APK. |
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` when updating the phone app | The installed copy was signed with a different key (for example the upstream AudioSource build). Uninstall the old MicSource/AudioSource app on the phone, then install the release APK again. App settings are lost. |
 
 ## Files on your computer
 
 - `~/.local/bin/micsource` — CLI command (symlink)
 - `~/.local/share/applications/micsource.desktop` — app drawer icon
-- `~/.local/share/micsource/` — CLI / control window / GUI wrapper / tray / monitor scripts, staged APK, adb bundle
+- `~/.local/share/micsource/` — CLI / control window / GUI wrapper / tray / monitor scripts and the adb bundle
 - `~/.config/micsource/config.ini` — your settings
 - `~/.config/systemd/user/micsource.service` — background service
 - `~/.config/autostart/micsource-tray.desktop` — optional tray autostart entry (written only when you enable **Tray Icon** in the app)

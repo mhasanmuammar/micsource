@@ -10,3 +10,9 @@
 .cxx
 /keystore.properties
 __pycache__/
+
+# Flatpak build outputs
+/.flatpak-builder/
+/builddir/
+/builddir-*/
+/repo/

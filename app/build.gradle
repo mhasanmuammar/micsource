@@ -10,6 +10,10 @@ if (keystorePropertiesFile.exists()) {
     keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
 }
 
+// Release workflow overrides these with -PversionName / -PversionCode.
+def appVersionCode = (project.findProperty('versionCode') ?: '7').toInteger()
+def appVersionName = project.findProperty('versionName') ?: '1.5'
+
 android {
     namespace 'fr.dzx.audiosource'
 
@@ -29,8 +33,8 @@ android {
         minSdkVersion 14
         targetSdkVersion 34
         compileSdk 34
-        versionCode 7
-        versionName '1.5'
+        versionCode appVersionCode
+        versionName appVersionName
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Release keystore when provided; debug keystore otherwise.

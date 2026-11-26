@@ -43,13 +43,14 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 APP_TITLE = "MicSource"
 SYSTEMD_UNIT = "micsource.service"
-EXT_ID = "micsource-tile@micsource.local"
 try:
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from paths import (DATA_DIR, CONFIG_DIR, CONFIG_PATH, ADB_PATH_FILE,
                       CLI_PATH, TRAY_PATH, TRAY_DESKTOP, UNIT_FILE,
-                      CONTROL_SOCKET, STATE_DIR, RUNTIME_DIR)
+                      CONTROL_SOCKET, STATE_DIR, RUNTIME_DIR,
+                      APP_ID, IS_FLATPAK, EXT_ID, GNOME_EXT_SRC,
+                      GNOME_EXT_DIR, MONITOR_PATH, GUI_PATH)
 except Exception:
     DATA_DIR = os.path.expanduser("~/.local/share/micsource")
     CONFIG_DIR = os.path.expanduser("~/.config/micsource")
@@ -62,6 +63,38 @@ except Exception:
     CONTROL_SOCKET = os.path.join(DATA_DIR, "micsource.sock")
     STATE_DIR = os.path.expanduser("~/.local/state/micsource")
     RUNTIME_DIR = os.path.expanduser("/run/user/%d/micsource" % os.getuid())
+    APP_ID = "io.github.mhasanmuammar.MicSource"
+    IS_FLATPAK = False
+    EXT_ID = "micsource-tile@micsource.local"
+    GNOME_EXT_SRC = os.path.join(DATA_DIR, "gnome")
+    GNOME_EXT_DIR = os.path.expanduser(
+        "~/.local/share/gnome-shell/extensions/" + EXT_ID)
+    MONITOR_PATH = os.path.join(DATA_DIR, "micsource-monitor.py")
+    GUI_PATH = os.path.join(DATA_DIR, "micsource-gui")
+
+DBUS_PATH = "/io/github/mhasanmuammar/MicSource"
+CONTROL_IFACE = APP_ID + ".Control"
+CONTROL_XML = """
+<node>
+  <interface name="%s">
+    <method name="GetStatus">
+      <arg type="a{sv}" direction="out"/>
+    </method>
+    <method name="Start"/>
+    <method name="Stop"/>
+    <method name="ShowWindow"/>
+    <method name="InstallTile"/>
+    <method name="RemoveTile"/>
+    <method name="SetAutostart">
+      <arg type="b" direction="in"/>
+    </method>
+    <signal name="StatusChanged">
+      <arg type="a{sv}"/>
+    </signal>
+  </interface>
+</node>
+""" % CONTROL_IFACE
+
 
 ANDROID_PKG = "fr.dzx.audiosource"  # Android package (baked into the APK)
 DEVICE_SOCKET = "audiosource"       # device-side socket (RecordThread)
@@ -85,6 +118,9 @@ def _load_config():
     global ANDROID_PKG, DEVICE_SOCKET
     adb_path = ""
     server_port = str(DEFAULT_SERVER_PORT)
+    env_port = os.environ.get("MICSOURCE_ADB_SERVER_PORT", "").strip()
+    if env_port:
+        server_port = env_port
     serial = ""
     host_socket = ""
     android_pkg = ANDROID_PKG
@@ -214,13 +250,15 @@ def _make_switch_row(title, subtitle):
 class MicSourceApp(Adw.Application):
     """Control window (Adwaita): status, service, device, prefs."""
 
-    def __init__(self):
-        super().__init__(application_id="local.micsource")
-        # NON_UNIQUE: each launch is its own primary instance. The default
-        # (unique) behavior hands activation off to whatever stale or
-        # crashed instance still holds the bus name -- and the new process
-        # exits silently without ever showing a window.
-        self.set_flags(Gio.ApplicationFlags.NON_UNIQUE)
+    def __init__(self, service_mode=False):
+        # Unique application: the GNOME extension and the CLI reach the
+        # primary instance through the app ID's D-Bus name and its actions.
+        # A D-Bus-activated start runs with --gapplication-service, which
+        # must stay windowless until an action asks for the window.
+        super().__init__(
+            application_id=APP_ID,
+            flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self._service_mode = service_mode
         self.window = None
         self.row_device = None
         self.row_monitor = None
@@ -237,6 +275,27 @@ class MicSourceApp(Adw.Application):
         self.meter = None          # input level bar (Monitoring row suffix)
         self._meter_value = 0.0    # last level reported by the service
         self._meter_on = False     # meter polling thread flag
+        self._monitor_proc = None  # supervised monitor child (Flatpak/no systemd)
+        self._monitor_wanted = False
+        self._monitor_started = 0.0
+        self._monitor_failures = 0
+        self._holds = 0
+        self._tray_proc = None
+        self._status_cache = {}
+        self._tile_cache = (False, False)
+        self._autostart_cache = False
+        self._status_emitted = None
+        self._polling = False
+        self._dbus_registered = False
+
+        for name, handler in (
+                ("start", self._action_start),
+                ("stop", self._action_stop),
+                ("show", self._action_show),
+                ("background", self._action_background)):
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", handler)
+            self.add_action(act)
 
         act = Gio.SimpleAction.new("preferences", None)
         act.connect("activate", self._on_preferences_action)
@@ -246,9 +305,38 @@ class MicSourceApp(Adw.Application):
         self.add_action(act)
 
     # ------------------------------------------------------------------
-    # UI construction (libadwaita)
+    # Application lifecycle / D-Bus activation
     # ------------------------------------------------------------------
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        # Status polling must not depend on the window: the extension and
+        # the CLI query the cached snapshot while MicSource runs headless.
+        GLib.timeout_add_seconds(3, self._refresh)
+        GLib.timeout_add_seconds(2, self._supervise_monitor)
+        if _cfg_bool("app", "tray", False) and os.path.isfile(TRAY_PATH):
+            self._start_tray()
+        self._refresh()
+
+    def do_command_line(self, command_line):
+        args = command_line.get_arguments()[1:]
+        if "--background" in args:
+            self.activate_action("background", None)
+        elif "--start" in args:
+            self.activate_action("start", None)
+        elif "--stop" in args:
+            self.activate_action("stop", None)
+        elif self._service_mode or "--gapplication-service" in args:
+            # D-Bus activation: wait for the action that caused it.
+            pass
+        else:
+            self.activate()
+        return 0
+
     def do_activate(self):
+        if self.window is not None:
+            self.window.present()
+            return
+
         self.window = Adw.ApplicationWindow(application=self)
         # Adaptive sizing: the content scroll page below keeps the window
         # usable at any height (GNOME HIG); 420x540 is just the default.
@@ -411,8 +499,246 @@ class MicSourceApp(Adw.Application):
 
         self.window.present()
         self.log_line("MicSource control window opened.")
-        GLib.timeout_add_seconds(3, self._refresh)
-        self._refresh()
+
+    # ------------------------------------------------------------------
+    # Service actions (D-Bus, CLI, extension, window button)
+    # ------------------------------------------------------------------
+    def _action_start(self, _action, _param):
+        self._start_monitor()
+        self._hold()
+
+    def _action_stop(self, _action, _param):
+        self._stop_monitor()
+        self._release()
+
+    def _action_show(self, _action, _param):
+        self.activate()
+
+    def _action_background(self, _action, _param):
+        self._start_monitor()
+        self._hold()
+
+    def _hold(self):
+        self._holds += 1
+        self.hold()
+
+    def _release(self):
+        if self._holds > 0:
+            self._holds -= 1
+            self.release()
+
+    def _monitor_running(self):
+        return (self._monitor_proc is not None
+                and self._monitor_proc.poll() is None)
+
+    def _start_monitor(self):
+        """Start the audio pump as a supervised child (Flatpak / no systemd).
+
+        The host install still prefers the systemd unit; this path is what
+        makes the sandbox self-contained and gives the D-Bus actions a
+        concrete process to drive.
+        """
+        if self._monitor_running():
+            self._monitor_wanted = True
+            return True, "already running"
+        if not os.path.isfile(MONITOR_PATH):
+            return False, "monitor not found (re-run install.sh)"
+        env = os.environ.copy()
+        env.setdefault("MICSOURCE_DATA_DIR", DATA_DIR)
+        env.setdefault("MICSOURCE_CONFIG_DIR", CONFIG_DIR)
+        env.setdefault("MICSOURCE_STATE_DIR", STATE_DIR)
+        env.setdefault("MICSOURCE_RUNTIME_DIR", RUNTIME_DIR)
+        env.setdefault("MICSOURCE_ADB_SERVER_PORT", str(ADB_SERVER_PORT))
+        try:
+            log_path = os.path.join(STATE_DIR, "monitor.log")
+            os.makedirs(STATE_DIR, exist_ok=True)
+            log = open(log_path, "a", buffering=1)
+        except OSError:
+            log = subprocess.DEVNULL
+        try:
+            self._monitor_proc = subprocess.Popen(
+                [sys.executable, MONITOR_PATH],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                env=env, start_new_session=True)
+        except OSError as exc:
+            return False, f"cannot start monitor: {exc}"
+        self._monitor_wanted = True
+        self._monitor_started = time.time()
+        self.log_line("monitor started")
+        return True, "monitor started"
+
+    def _stop_monitor(self):
+        self._monitor_wanted = False
+        proc = self._monitor_proc
+        self._monitor_proc = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except OSError:
+                pass
+            self.log_line("monitor stopped")
+        if self._tray_proc is not None:
+            self._stop_tray()
+
+    def _supervise_monitor(self):
+        """Restart the monitor if it dies while it is wanted."""
+        if not self._monitor_wanted:
+            return True
+        if self._monitor_running():
+            self._monitor_failures = 0
+            return True
+        # Back off after repeated immediate crashes instead of spinning.
+        if time.time() - self._monitor_started < 3:
+            return True
+        if self._monitor_failures >= 5:
+            return True  # stop restarting; the log explains the failure
+        self._monitor_failures += 1
+        ok, msg = self._start_monitor()
+        self.log_line(f"monitor restart: {msg}")
+        return True
+
+    def _start_tray(self):
+        if (self._tray_proc is not None
+                and self._tray_proc.poll() is None):
+            return
+        try:
+            self._tray_proc = subprocess.Popen(
+                [sys.executable, TRAY_PATH],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True)
+        except OSError as exc:
+            self.log_line(f"tray failed to start: {exc}")
+
+    def _stop_tray(self):
+        proc = self._tray_proc
+        self._tray_proc = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+
+    def do_shutdown(self):
+        # Never leave an orphan audio pump behind on a clean Quit.
+        if self._monitor_proc is not None:
+            self._monitor_wanted = False
+            try:
+                self._monitor_proc.terminate()
+            except OSError:
+                pass
+        self._stop_tray()
+        Adw.Application.do_shutdown(self)
+
+    # ------------------------------------------------------------------
+    # D-Bus control interface (thin adapter over the same actions)
+    # ------------------------------------------------------------------
+    def do_dbus_register(self, connection, object_path):
+        if not Adw.Application.do_dbus_register(self, connection, object_path):
+            return False
+        try:
+            node = Gio.DBusNodeInfo.new_for_xml(CONTROL_XML)
+            connection.register_object(
+                object_path, node.interfaces[0], self._on_control_call,
+                None, None)
+            self._dbus_registered = True
+            self._dbus_connection = connection
+            self._dbus_object_path = object_path
+        except Exception as exc:  # noqa: BLE001
+            self.log_line(f"control interface unavailable: {exc}")
+        return True
+
+    def do_dbus_unregister(self, connection, object_path):
+        if self._dbus_registered:
+            try:
+                connection.unregister_object(object_path)
+            except Exception:
+                pass
+            self._dbus_registered = False
+        Adw.Application.do_dbus_unregister(self, connection, object_path)
+
+    def _on_control_call(self, _conn, _sender, _path, _iface, method,
+                         params, invocation):
+        try:
+            if method == "GetStatus":
+                invocation.return_value(
+                    GLib.Variant("(a{sv})", (self._status_variant(),)))
+            elif method in ("Start", "Stop", "ShowWindow", "InstallTile",
+                            "RemoveTile", "SetAutostart"):
+                if method == "Start":
+                    self.activate_action("start", None)
+                elif method == "Stop":
+                    self.activate_action("stop", None)
+                elif method == "ShowWindow":
+                    GLib.idle_add(self.activate)
+                elif method in ("InstallTile", "RemoveTile"):
+                    want = method == "InstallTile"
+                    threading.Thread(target=self._apply_tile,
+                                     args=(want,), daemon=True).start()
+                elif method == "SetAutostart":
+                    on = bool(params.unpack()[0])
+                    threading.Thread(target=self._apply_autostart,
+                                     args=(on,), daemon=True).start()
+                invocation.return_value(None)
+            else:
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.UnknownMethod",
+                    f"unknown method {method}")
+        except Exception as exc:  # noqa: BLE001
+            invocation.return_dbus_error(
+                "org.freedesktop.DBus.Error.Failed", str(exc))
+
+    def _status_variant(self):
+        """Current snapshot as an a{sv} dictionary for D-Bus consumers."""
+        monitor = self._status_cache.get("monitor", "")
+        cache = self._status_cache
+        connected = "device=1" in monitor and "forward=1" in monitor
+        name = ""
+        m = re.search(r"\bname=([^\n\r]+)", monitor)
+        if m:
+            name = m.group(1).strip()
+        audio_seconds = dropped_seconds = 0
+        m = re.search(r"audio_seconds=(\d+)", monitor)
+        if m:
+            audio_seconds = int(m.group(1))
+        m = re.search(r"dropped_seconds=(\d+)", monitor)
+        if m:
+            dropped_seconds = int(m.group(1))
+        installed, enabled = self._tile_cache
+        values = {
+            "device": GLib.Variant("b", connected),
+            "monitoring": GLib.Variant("b", bool(monitor)),
+            "name": GLib.Variant("s", name),
+            "service": GLib.Variant(
+                "s", "active" if cache.get("service") == "active"
+                else "inactive"),
+            "audio_seconds": GLib.Variant("t", audio_seconds),
+            "dropped_seconds": GLib.Variant("t", dropped_seconds),
+            "tile_installed": GLib.Variant("b", installed),
+            "tile_enabled": GLib.Variant("b", enabled),
+            "autostart": GLib.Variant("b", self._autostart_state()),
+            "flatpak": GLib.Variant("b", IS_FLATPAK),
+        }
+        return values
+
+    def _emit_status(self):
+        if not self._dbus_registered:
+            return
+        payload = self._status_variant()
+        if payload == self._status_emitted:
+            return
+        self._status_emitted = payload
+        try:
+            self._dbus_connection.emit_signal(
+                None, self._dbus_object_path, CONTROL_IFACE,
+                "StatusChanged", GLib.Variant("(a{sv})", (payload,)))
+        except Exception:
+            pass
 
     def _action_row_button(self, group, title, subtitle, label, handler):
         """HIG boxed-list row: title/subtitle with a flat button suffix.
@@ -447,7 +773,7 @@ class MicSourceApp(Adw.Application):
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.settimeout(1.2)
-                s.connect(os.path.join(DATA_DIR, "micsource.sock"))
+                s.connect(CONTROL_SOCKET)
                 s.sendall(b"level")
                 resp = s.recv(16).decode(errors="ignore").strip()
                 val = float(resp) if resp else 0.0
@@ -486,7 +812,13 @@ class MicSourceApp(Adw.Application):
                 pass
         self.log_line(msg)
 
+    def _systemd_available(self):
+        return (not IS_FLATPAK and bool(shutil.which("systemctl"))
+                and os.path.isfile(UNIT_FILE))
+
     def _service_state(self):
+        if not self._systemd_available():
+            return "active" if self._monitor_running() else "inactive"
         try:
             proc = subprocess.run(
                 ["systemctl", "--user", "is-active", SYSTEMD_UNIT],
@@ -521,12 +853,18 @@ class MicSourceApp(Adw.Application):
     # Periodic status refresh (3 s)
     # ------------------------------------------------------------------
     def _refresh(self):
+        if self._polling:
+            return True  # previous probe still running; never stack threads
+        self._polling = True
+
         def worker():
             try:
                 online = device_online()
                 forwarded = socket_forwarded() if online else False
                 service = self._service_state()
                 monitor = self._query_monitor()
+                self._tile_cache = self._tile_state()
+                self._autostart_cache = self._get_autostart()
                 # Device model name: prefer the monitor's already-resolved
                 # name — its probe chain (ro.product.marketname -> model ->
                 # ...) yields user-facing marketing names such as "Redmi A5"
@@ -536,7 +874,7 @@ class MicSourceApp(Adw.Application):
                 # first, then model) only while the monitor is not running.
                 m = re.search(r"\bname=([^\n\r]+)", monitor)
                 device_name_str = m.group(1).strip() if m else ""
-                if online and not device_name_str:
+                if online and not device_name_str and not monitor:
                     rc, out_n, _err2 = run_adb(
                         ["shell", "getprop", "ro.product.marketname"],
                         timeout=6)
@@ -562,7 +900,7 @@ class MicSourceApp(Adw.Application):
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(2)
-            s.connect(os.path.join(DATA_DIR, "micsource.sock"))
+            s.connect(CONTROL_SOCKET)
             s.sendall(b"status")
             # 256-byte buffer: the status line can carry name=<model>, and
             # 64 truncated it off the end (same fix the CLI got).
@@ -573,39 +911,48 @@ class MicSourceApp(Adw.Application):
             return ""
 
     def _apply_status(self, connected, device_name_str, service, err, monitor):
-        """Two user-facing rows only: Device and Monitoring. The systemd
-        unit name ("background service") is an implementation detail; the
-        seconds counter moved to the level bar + CLI status."""
+        """Cache the snapshot for D-Bus, then paint the two status rows."""
         global last_notified
 
-        if connected and device_name_str:
-            self.row_device.set_subtitle(device_name_str)
-        else:
-            self.row_device.set_subtitle(
-                "connected" if connected else "disconnected")
-        if err:
-            self.row_error.set_subtitle(err)
-        self.row_error.set_visible(bool(err))
+        self._polling = False
+        self._status_cache = {
+            "connected": connected,
+            "name": device_name_str,
+            "service": service,
+            "monitor": monitor,
+            "error": err,
+        }
+        if self.window is not None and self.row_device is not None:
+            if connected and device_name_str:
+                self.row_device.set_subtitle(device_name_str)
+            else:
+                self.row_device.set_subtitle(
+                    "connected" if connected else "disconnected")
+            if err:
+                self.row_error.set_subtitle(err)
+            self.row_error.set_visible(bool(err))
 
-        if monitor:
-            mon = ("on — phone audio is streaming" if connected
-                   else "on — waiting for the phone")
-        elif service == "active":
-            mon = "starting…"
-        else:
-            mon = "off"
-        self.row_monitor.set_subtitle(mon)
+            if monitor:
+                mon = ("on — phone audio is streaming" if connected
+                       else "on — waiting for the phone")
+            elif service == "active":
+                mon = "starting…"
+            else:
+                mon = "off"
+            self.row_monitor.set_subtitle(mon)
 
-        self._service_active = service == "active"
-        if not self._service_busy:
-            self.btn_service.set_label(
-                "Stop Service" if self._service_active else "Start Service")
-            self.btn_service.set_sensitive(True)
-            for css in ("suggested-action", "destructive-action"):
-                self.btn_service.remove_css_class(css)
-            self.btn_service.add_css_class(
-                "destructive-action" if self._service_active
-                else "suggested-action")
+            self._service_active = service == "active"
+            if not self._service_busy:
+                self.btn_service.set_label(
+                    "Stop Service" if self._service_active
+                    else "Start Service")
+                self.btn_service.set_sensitive(True)
+                for css in ("suggested-action", "destructive-action"):
+                    self.btn_service.remove_css_class(css)
+                self.btn_service.add_css_class(
+                    "destructive-action" if self._service_active
+                    else "suggested-action")
+        self._emit_status()
 
         # Notification on connect/disconnect transitions (skip first check).
         if last_notified is not None and connected != last_notified:
@@ -650,19 +997,30 @@ class MicSourceApp(Adw.Application):
             description="How MicSource appears on your desktop")
         page.add(grp)
 
-        # Auto-start service at login (systemd user unit).
-        svc_ok = bool(shutil.which("systemctl")) and os.path.isfile(UNIT_FILE)
+        # Auto-start at login: systemd unit on the host, Background portal
+        # inside the Flatpak (which must not write an XDG autostart file).
+        if IS_FLATPAK:
+            svc_ok = True
+            svc_subtitle = ("Starts MicSource in the background when you "
+                            "log in (desktop portal)")
+            svc_unavailable = ""
+        else:
+            svc_ok = (bool(shutil.which("systemctl"))
+                      and os.path.isfile(UNIT_FILE))
+            svc_subtitle = ("Runs the background audio service when you "
+                            "log in")
+            svc_unavailable = "systemd unit missing (re-run install.sh)"
         svc_row, svc_watch, svc_get, svc_set = _make_switch_row(
-            "Auto-start Service at Login",
-            "Runs the background audio service when you log in")
+            "Auto-start Service at Login", svc_subtitle)
         self._wire_toggle(svc_row, svc_watch, svc_get, svc_set,
                           self._get_autostart, self._apply_autostart,
                           sensitive=svc_ok,
-                          unavailable="systemd unit missing (re-run install.sh)")
+                          unavailable=svc_unavailable)
         grp.add(svc_row)
 
-        # GNOME top-bar tile.
-        gn_ok = bool(shutil.which("gnome-extensions"))
+        # GNOME top-bar tile. In the Flatpak the app installs the bundled
+        # extension itself; on the host gnome-extensions does the enabling.
+        gn_ok = IS_FLATPAK or bool(shutil.which("gnome-extensions"))
         tile_row, tile_watch, tile_get, tile_set = _make_switch_row(
             "GNOME Top-bar Tile",
             "MicSource status and controls in the GNOME panel")
@@ -820,23 +1178,38 @@ class MicSourceApp(Adw.Application):
         return False
 
     # -- per-toggle getters/apply (run in worker threads) -----------------
-    def _get_autostart(self):
-        rc, out = _run_cmd(["systemctl", "--user", "is-enabled", SYSTEMD_UNIT])
-        return rc == 0 and out.strip() == "enabled"
+    def _bus_call(self, dest, path, interface, method, params,
+                  timeout=8000):
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        return bus.call_sync(dest, path, interface, method, params, None,
+                             Gio.DBusCallFlags.NONE, timeout, None)
 
-    def _apply_autostart(self, on):
-        args = (["systemctl", "--user", "enable", "--quiet"]
-                if on else ["systemctl", "--user", "disable", "--quiet"])
-        rc, out = _run_cmd(args + [SYSTEMD_UNIT])
-        if rc != 0:
-            return False, out or "systemctl failed"
-        return True, ("service enabled at login" if on
-                      else "service autostart disabled")
+    def _shell_extension_state(self):
+        """(installed_on_shell, enabled) from org.gnome.Shell.Extensions."""
+        try:
+            reply = self._bus_call(
+                "org.gnome.Shell.Extensions",
+                "/org/gnome/Shell/Extensions",
+                "org.gnome.Shell.Extensions", "ListExtensions", None)
+            (extensions,) = reply.deep_unpack()
+            info = extensions.get(EXT_ID)
+            if not info:
+                return False, False
+            # 1 = ENABLED, 2 = DISABLED, 3 = ERROR, 4 = OUT_OF_DATE.
+            return True, info.get("state") == 1
+        except Exception:
+            return False, False
 
-    def _get_tile(self):
+    def _tile_state(self):
+        """(files installed, enabled) without assuming a host CLI exists."""
+        installed = os.path.isfile(
+            os.path.join(GNOME_EXT_DIR, "extension.js"))
+        if IS_FLATPAK:
+            on_shell, enabled = self._shell_extension_state()
+            return installed or on_shell, enabled
         rc, out = _run_cmd(["gnome-extensions", "info", EXT_ID])
         if rc != 0:
-            return False
+            return installed, False
         for line in out.splitlines():
             stripped = line.strip()
             if stripped.startswith("State:"):
@@ -849,10 +1222,61 @@ class MicSourceApp(Adw.Application):
                 # as on, so the getter reported a *hidden* tile as on
                 # and every verified re-sync snapped the switch back
                 # (root cause of the "toggle does nothing" reports).
-                return state.startswith("ACTIVE")
-        return False
+                return installed, state.startswith("ACTIVE")
+        return installed, False
+
+    def _get_autostart(self):
+        if IS_FLATPAK:
+            return _cfg_bool("app", "autostart", False)
+        rc, out = _run_cmd(["systemctl", "--user", "is-enabled", SYSTEMD_UNIT])
+        return rc == 0 and out.strip() == "enabled"
+
+    def _autostart_state(self):
+        return self._autostart_cache
+
+    def _portal_request_background(self, on):
+        """Ask the Background portal to autostart `micsource-gui --background`."""
+        token = "micsource_%d" % int(time.time() * 1000)
+        options = {
+            "handle_token": GLib.Variant("s", token),
+            "reason": GLib.Variant(
+                "s", "Run the MicSource phone-microphone service at login"),
+            "autostart": GLib.Variant("b", bool(on)),
+            "commandline": GLib.Variant(
+                "as", ["micsource-gui", "--background"]),
+            "dbus-activatable": GLib.Variant("b", True),
+        }
+        self._bus_call(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Background", "RequestBackground",
+            GLib.Variant("(sa{sv})", ("", options)), timeout=15000)
+
+    def _apply_autostart(self, on):
+        if IS_FLATPAK:
+            try:
+                self._portal_request_background(on)
+            except Exception as exc:  # noqa: BLE001
+                return False, f"desktop portal unavailable: {exc}"
+            _cfg_set_bool("app", "autostart", on)
+            if on:
+                _cfg_set_bool("app", "tray", _cfg_bool("app", "tray", False))
+            return True, ("MicSource will start in the background at login"
+                          if on else "login autostart disabled")
+        args = (["systemctl", "--user", "enable", "--quiet"]
+                if on else ["systemctl", "--user", "disable", "--quiet"])
+        rc, out = _run_cmd(args + [SYSTEMD_UNIT])
+        if rc != 0:
+            return False, out or "systemctl failed"
+        return True, ("service enabled at login" if on
+                      else "service autostart disabled")
+
+    def _get_tile(self):
+        return self._tile_state()[1]
 
     def _apply_tile(self, on):
+        if IS_FLATPAK:
+            return self._apply_tile_flatpak(on)
         args = (["gnome-extensions", "enable", EXT_ID] if on
                 else ["gnome-extensions", "disable", EXT_ID])
         rc, out = _run_cmd(args)
@@ -876,6 +1300,49 @@ class MicSourceApp(Adw.Application):
         return False, ("gnome-shell did not confirm the tile is "
                        + ("on" if on else "off") + " within ~3 s")
 
+    def _apply_tile_flatpak(self, on):
+        """Install the bundled extension into the host Shell directory."""
+        try:
+            if on:
+                os.makedirs(GNOME_EXT_DIR, exist_ok=True)
+                for name in ("extension.js", "prefs.js", "metadata.json"):
+                    src = os.path.join(GNOME_EXT_SRC, name)
+                    dst = os.path.join(GNOME_EXT_DIR, name)
+                    shutil.copy2(src, dst)
+        except OSError as exc:
+            return False, f"cannot install extension: {exc}"
+        try:
+            if on:
+                # Reload makes the running Shell pick up newly copied files;
+                # it fails harmlessly for an extension it has not seen yet.
+                for method in ("ReloadExtension", "EnableExtension"):
+                    try:
+                        self._bus_call(
+                            "org.gnome.Shell.Extensions",
+                            "/org/gnome/Shell/Extensions",
+                            "org.gnome.Shell.Extensions", method,
+                            GLib.Variant("(s)", (EXT_ID,)))
+                    except Exception:
+                        pass
+            else:
+                self._bus_call(
+                    "org.gnome.Shell.Extensions",
+                    "/org/gnome/Shell/Extensions",
+                    "org.gnome.Shell.Extensions", "DisableExtension",
+                    GLib.Variant("(s)", (EXT_ID,)))
+        except Exception as exc:  # noqa: BLE001
+            return False, f"gnome-shell did not accept the change: {exc}"
+        for _ in range(6):
+            if self._get_tile() is on:
+                return True, ("top-bar tile enabled" if on
+                              else "top-bar tile disabled")
+            time.sleep(0.5)
+        if on:
+            return False, ("extension files installed, but GNOME Shell has "
+                           "not loaded it yet — log out and back in, then "
+                           "enable the tile")
+        return False, "gnome-shell did not confirm the tile is off"
+
     # -- tray helpers (probe the session-bus watcher in a subprocess) -----
     TRAY_PROBE = (
         "from gi.repository import Gio, GLib\n"
@@ -898,6 +1365,8 @@ class MicSourceApp(Adw.Application):
             return False
 
     def _get_tray(self):
+        if IS_FLATPAK:
+            return _cfg_bool("app", "tray", False)
         return os.path.isfile(TRAY_DESKTOP)
 
     def _apply_tray(self, on):
@@ -907,6 +1376,10 @@ class MicSourceApp(Adw.Application):
                     "no tray support on this desktop — no StatusNotifier "
                     "watcher on the session bus (GNOME needs the "
                     "appindicatorsupport shell extension)")
+            if IS_FLATPAK:
+                _cfg_set_bool("app", "tray", True)
+                self._start_tray()
+                return True, "tray icon enabled"
             os.makedirs(os.path.dirname(TRAY_DESKTOP), exist_ok=True)
             desktop = (
                 "[Desktop Entry]\n"
@@ -930,6 +1403,10 @@ class MicSourceApp(Adw.Application):
             except Exception as exc:  # noqa: BLE001
                 return False, f"cannot start tray: {exc}"
             return True, "tray icon enabled (autostart entry written)"
+        if IS_FLATPAK:
+            _cfg_set_bool("app", "tray", False)
+            self._stop_tray()
+            return True, "tray icon disabled"
         try:
             os.remove(TRAY_DESKTOP)
         except FileNotFoundError:

@@ -1,6 +1,7 @@
 """Shared ADB command construction for MicSource host components."""
 
-DEFAULT_SERVER_PORT = 5038
+import os
+
 DEFAULT_SYSTEM_PORT = 5037
 
 
@@ -15,6 +16,25 @@ def validate_server_port(value):
     if port == DEFAULT_SYSTEM_PORT:
         raise ValueError("ADB server port 5037 is reserved for the system ADB server")
     return port
+
+
+def _default_server_port():
+    """Port 5039 inside the Flatpak (set by the wrapper), 5038 on the host.
+
+    The environment variable is authoritative so a sandbox can never fall
+    back to the host's 5038 server.  Invalid values are ignored rather than
+    crashing every component at import time.
+    """
+    raw = os.environ.get("MICSOURCE_ADB_SERVER_PORT", "").strip()
+    if raw:
+        try:
+            return validate_server_port(raw)
+        except ValueError:
+            pass
+    return 5038
+
+
+DEFAULT_SERVER_PORT = _default_server_port()
 
 
 def command(adb_path, server_port, args, serial=None):

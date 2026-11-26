@@ -17,7 +17,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALL="${REPO_ROOT}/linux-install/install.sh"
 UNINSTALL="${REPO_ROOT}/linux-install/uninstall.sh"
-APK_VERIFY="${REPO_ROOT}/linux-install/assets/micsource-apk-verify"
 RUNTIME_ROOT="/tmp/opencode"
 
 PASSED=0
@@ -141,7 +140,6 @@ derive_test_paths() {
     TEST_CONFIG_INI="${TEST_CONFIG_DIR}/config.ini"
     TEST_ADB_BUNDLE_DIR="${TEST_DATA_DIR}/adb-bundle"
     TEST_ADB_BUNDLE="${TEST_ADB_BUNDLE_DIR}/platform-tools/adb"
-    TEST_PROJECT_PATH="${TEST_DATA_DIR}/project.path"
 }
 
 make_sandbox() {
@@ -269,10 +267,8 @@ make_full_fixture() {
 
     # Data-dir markers that install.sh versions past and present write.
     : >"${TEST_DATA_DIR}/adb.path"
-    : >"${TEST_DATA_DIR}/apk.path"
     : >"${TEST_DATA_DIR}/micsource"
     : >"${TEST_DATA_DIR}/micsource-monitor.py"
-    : >"${TEST_DATA_DIR}/project.path"
 
     # A filesystem marker is sufficient: uninstall removes the socket path
     # with rm -f, and this sandbox may deny AF_UNIX bind() via seccomp.
@@ -393,15 +389,13 @@ case_install_happy_path() {
     assert_file "${TEST_UNIT}"
     assert_file "${TEST_ICON}"
     local f
-    for f in micsource micsource-gui micsource-build micsource-apk-verify \
-        micsource-app.py micsource-tray.py micsource-monitor.py micsource_adb.py; do
+    for f in micsource micsource-gui micsource-app.py micsource-tray.py \
+        micsource-monitor.py micsource_adb.py; do
         assert_file "${TEST_DATA_DIR}/${f}"
         if [[ ! -x "${TEST_DATA_DIR}/${f}" ]]; then
             fail_case "expected executable payload: ${TEST_DATA_DIR}/${f}"
         fi
     done
-    assert_file "${TEST_PROJECT_PATH}"
-    assert_contains "${TEST_PROJECT_PATH}" "${REPO_ROOT}"
     assert_file "${TEST_CLI_LINK}"
     if [[ "$(readlink -f "${TEST_CLI_LINK}")" != "${TEST_DATA_DIR}/micsource" ]]; then
         fail_case "(${TEST_CLI_LINK}) points at $(readlink -f "${TEST_CLI_LINK}"), expected ${TEST_DATA_DIR}/micsource"
@@ -422,10 +416,9 @@ case_install_happy_path() {
     fi
     assert_contains "${STUB_LOG}" "systemctl --user daemon-reload"
     # The installed assets are the audited copies: the CLI must carry its own
-    # warn()/ask() helpers and micsource-build must read project.path.
+    # warn()/ask() helpers.
     assert_matches "${TEST_DATA_DIR}/micsource" '^warn\(\)'
     assert_matches "${TEST_DATA_DIR}/micsource" '^ask\(\)'
-    assert_matches "${TEST_DATA_DIR}/micsource-build" 'project\.path'
     assert_matches "${TEST_DATA_DIR}/micsource_adb.py" 'def validate_server_port'
     save_sandbox
     end_case
@@ -503,19 +496,6 @@ case_install_required_failure() {
     assert_exit 1 "${RC}"
     combine_output
     assert_contains "${COMBINED}" "config (FAILED)"
-    end_case
-}
-
-##############################################################################
-# Case 11: a declined OPTIONAL step records skipped and keeps exit 0
-##############################################################################
-case_install_optional_skipped() {
-    start_case 11 "declined build env records build_env (skipped) and exits 0"
-    make_sandbox
-    run_script $'n\nn\n' "${INSTALL}"
-    assert_exit 0 "${RC}"
-    combine_output
-    assert_contains "${COMBINED}" "build_env (skipped)"
     end_case
 }
 
@@ -659,85 +639,6 @@ STUB
     assert_contains "${COMBINED}" "adb (FAILED)"
     assert_not_contains "${STUB_LOG}" "unzip "
     assert_gone "${TEST_ADB_BUNDLE_DIR}/platform-tools"
-    end_case
-}
-
-##############################################################################
-# Case 19: APK verifier checks through apksigner and rejects invalid signatures
-##############################################################################
-case_apk_signature_verification() {
-    start_case 19 "APK verifier accepts valid signatures and rejects invalid ones"
-    make_sandbox
-    local sdk="${SANDBOX}/android-sdk"
-    local apk="${SANDBOX}/sample.apk"
-    mkdir -p "${TEST_DATA_DIR}" "${sdk}/build-tools/34.0.0"
-    printf 'ANDROID_HOME=%s\n' "${sdk}" >"${TEST_DATA_DIR}/build-env.path"
-    printf 'fixture APK\n' >"${apk}"
-    cat >"${sdk}/build-tools/34.0.0/apksigner" <<'STUB'
-#!/bin/sh
-printf 'apksigner %s\n' "$*" >> "${STUB_LOG}"
-printf 'WARNING: benign META-INF metadata\n'
-exit "${APKSIGNER_RESULT:-0}"
-STUB
-    chmod +x "${sdk}/build-tools/34.0.0/apksigner"
-
-    RC=0
-    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" PATH="/usr/bin:/bin" \
-        bash "${APK_VERIFY}" "${apk}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
-    assert_exit 0 "${RC}"
-    assert_contains "${STUB_LOG}" "apksigner verify ${apk}"
-    assert_not_contains "${TEST_STDOUT}${TEST_STDERR}" "WARNING: benign META-INF metadata"
-
-    RC=0
-    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" APKSIGNER_RESULT=1 \
-        PATH="/usr/bin:/bin" bash "${APK_VERIFY}" "${apk}" \
-        >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
-    assert_exit 1 "${RC}"
-    assert_contains "${TEST_STDERR}" "APK signature verification failed"
-    end_case
-}
-
-##############################################################################
-# Case 20: install-apk verifies before any adb install command
-##############################################################################
-case_cli_install_requires_valid_apk_signature() {
-    start_case 20 "install-apk refuses invalid signatures before adb install"
-    make_sandbox
-    local sdk="${SANDBOX}/android-sdk"
-    local apk="${TEST_DATA_DIR}/micsource-release.apk"
-    mkdir -p "${TEST_DATA_DIR}" "${sdk}/build-tools/34.0.0"
-    printf '%s\n' "${STUBBIN}/adb" >"${TEST_DATA_DIR}/adb.path"
-    printf 'ANDROID_HOME=%s\n' "${sdk}" >"${TEST_DATA_DIR}/build-env.path"
-    printf 'fixture APK\n' >"${apk}"
-    cp "${APK_VERIFY}" "${TEST_DATA_DIR}/micsource-apk-verify"
-    chmod 755 "${TEST_DATA_DIR}/micsource-apk-verify"
-    cat >"${STUBBIN}/adb" <<'STUB'
-#!/bin/sh
-printf 'adb %s\n' "$*" >> "${STUB_LOG}"
-exit 0
-STUB
-    cat >"${sdk}/build-tools/34.0.0/apksigner" <<'STUB'
-#!/bin/sh
-printf 'apksigner %s\n' "$*" >> "${STUB_LOG}"
-exit "${APKSIGNER_RESULT:-0}"
-STUB
-    chmod +x "${STUBBIN}/adb" "${sdk}/build-tools/34.0.0/apksigner"
-
-    RC=0
-    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" APKSIGNER_RESULT=1 \
-        PATH="${STUBBIN}:/usr/bin:/bin" bash "${REPO_ROOT}/linux-install/assets/micsource" \
-        install-apk >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
-    assert_exit 1 "${RC}"
-    assert_not_contains "${STUB_LOG}" "adb install"
-    assert_contains "${TEST_STDERR}" "Refusing to install an APK without a valid signature."
-
-    : >"${STUB_LOG}"
-    RC=0
-    env HOME="${SANDBOX_HOME}" STUB_LOG="${STUB_LOG}" PATH="${STUBBIN}:/usr/bin:/bin" \
-        bash "${REPO_ROOT}/linux-install/assets/micsource" install-apk \
-        >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
-    assert_exit 0 "${RC}"
-    assert_contains "${STUB_LOG}" "adb -P 5038 install -r -t ${apk}"
     end_case
 }
 
@@ -939,62 +840,6 @@ EOF
 }
 
 ##############################################################################
-# Case 25: verifier accepts a real AGP-built APK (META-INF metadata/version
-# entries present) — the -Werr false-refusal regression
-##############################################################################
-case_apk_verify_agp_style_metadata() {
-    local title="Verifier accepts real signed APK with AGP META-INF metadata"
-    local apk_src="${REPO_ROOT}/app/build/outputs/apk/debug/app-debug.apk"
-    [[ -f "${apk_src}" ]] || apk_src="${REPO_ROOT}/app/build/outputs/apk/release/app-release.apk"
-    if [[ ! -f "${apk_src}" ]]; then
-        printf 'SKIP: %s (no build output; run ./gradlew assembleDebug first)\n' "${title}"
-        return 0
-    fi
-    local apksigner=""
-    local sdk
-    sdk="$(awk -F= '/^sdk\.dir=/{print $2}' "${REPO_ROOT}/local.properties" 2>/dev/null || true)"
-    if [[ -z "${sdk}" || ! -d "${sdk}" ]]; then
-        sdk="${HOME}/.local/share/micsource/build-env/android-sdk"
-    fi
-    apksigner="$(ls "${sdk}"/build-tools/*/apksigner 2>/dev/null | tail -n 1 || true)"
-    if [[ -z "${apksigner}" || ! -x "${apksigner}" ]]; then
-        printf 'SKIP: %s (real apksigner unavailable)\n' "${title}"
-        return 0
-    fi
-
-    start_case 25 "${title}"
-    make_sandbox
-
-    # A real AGP-built APK must be accepted: it carries informational
-    # warnings (META-INF metadata/version entries not covered by the v1
-    # scheme, though covered by the v2 whole-file signature).
-    RC=0
-    bash "${APK_VERIFY}" "${apk_src}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
-    assert_exit 0 "${RC}"
-
-    # Tampering after signing must still be refused.
-    local tampered="${SANDBOX}/tampered.apk"
-    cp "${apk_src}" "${tampered}"
-    python3 - "${tampered}" <<'PY'
-import os, sys, zipfile
-apk = sys.argv[1]
-tmp = apk + ".tmp"
-with zipfile.ZipFile(apk) as zin, zipfile.ZipFile(tmp, "w") as zout:
-    for item in zin.infolist():
-        data = zin.read(item.filename)
-        if item.filename == "AndroidManifest.xml":
-            data = b"tampered"
-        zout.writestr(item, data)
-os.replace(tmp, apk)
-PY
-    RC=0
-    bash "${APK_VERIFY}" "${tampered}" >"${TEST_STDOUT}" 2>"${TEST_STDERR}" || RC=$?
-    assert_exit 1 "${RC}"
-    assert_contains "${TEST_STDERR}" "APK signature verification failed"
-    end_case
-}
-
-##############################################################################
 # Case 26: device install honours the configured serial when both USB and
 # Wi-Fi transports are online (plain `adb get-state` is ambiguous then)
 ##############################################################################
@@ -1023,30 +868,18 @@ esac
 exit 0
 STUB
     chmod +x "${STUBBIN}/adb"
-    cat >"${STUBBIN}/apksigner" <<'STUB'
-#!/bin/sh
-printf 'apksigner %s\n' "$*" >> "${STUB_LOG}"
-exit 0
-STUB
-    chmod +x "${STUBBIN}/apksigner"
-    # The verifier resolves the SDK from build-env.path (run_script clears
-    # ANDROID_HOME) and uses its apksigner before PATH.
-    mkdir -p "${TEST_DATA_DIR}" "${SANDBOX}/android-sdk/build-tools/34.0.0"
-    printf 'ANDROID_HOME=%s\n' "${SANDBOX}/android-sdk" >"${TEST_DATA_DIR}/build-env.path"
-    ln -sf "${STUBBIN}/apksigner" "${SANDBOX}/android-sdk/build-tools/34.0.0/apksigner"
 
     run_script $'n\nn\n' "${INSTALL}"
     assert_exit 0 "${RC}"
     combine_output
-    assert_contains "${COMBINED}" "APK installed on device."
     assert_not_contains "${COMBINED}" "device (skipped)"
     assert_contains "${STUB_LOG}" "adb -P 5038 -s wifi-serial get-state"
     assert_contains "${STUB_LOG}" \
+        "adb -P 5038 -s wifi-serial shell am start -n fr.dzx.audiosource/.MainActivity --ez start true"
+    assert_contains "${STUB_LOG}" \
         "adb -P 5038 -s wifi-serial forward localabstract:micsource localabstract:audiosource"
-    local install_line
-    install_line="$(grep ' install ' "${STUB_LOG}" || true)"
-    if [[ "${install_line}" != *"adb -P 5038 -s wifi-serial install "* ]]; then
-        fail_case "APK install did not target the configured serial: ${install_line}"
+    if grep -q ' install ' "${STUB_LOG}"; then
+        fail_case "installer must not install an APK: $(grep ' install ' "${STUB_LOG}")"
     fi
     end_case
 }
@@ -1074,7 +907,6 @@ main() {
     case_install_uninstall_roundtrip
     case_install_args
     case_install_required_failure
-    case_install_optional_skipped
     case_install_download_failure
     case_install_non_gnome
     case_uninstall_keeps_bundle
@@ -1082,13 +914,10 @@ main() {
     case_install_readonly_config
     case_install_no_device
     case_install_checksum_mismatch
-    case_apk_signature_verification
-    case_cli_install_requires_valid_apk_signature
     case_install_migrates_adb_link
     case_cli_uses_configured_adb_port
     case_uninstall_preserves_foreign_adb_link
     case_cli_rejects_system_adb_port
-    case_apk_verify_agp_style_metadata
     case_install_device_with_serial
 
     printf '\n%d passed, %d failed\n' "${PASSED}" "${FAILED}"
