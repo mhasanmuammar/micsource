@@ -220,7 +220,7 @@ def _cfg_bool(section, key, default):
 
 
 def _speakers_enabled():
-    return _cfg_bool("audio", "play_to_speakers", False)
+    return _cfg_bool("audio", "play_to_speakers", True)
 
 
 def _vmic_enabled():

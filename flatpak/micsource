@@ -96,7 +96,7 @@ resolve_adb() {
 }
 
 resolve_adb_server_port() {
-    local port="5038"
+    local port="${MICSOURCE_ADB_SERVER_PORT:-5038}"
     if [[ -f "${CONFIG_DIR}/config.ini" ]]; then
         port="$(awk -F= '/^[[:space:]]*server_port[[:space:]]*=/ {sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit}' \
             "${CONFIG_DIR}/config.ini" | head -n 1)"
