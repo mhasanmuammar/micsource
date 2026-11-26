@@ -1564,6 +1564,24 @@ class MicSourceApp(Adw.Application):
         else:
             _load_config()
             self._refresh()
+            # Ensure the ADB forward is established so the device
+            # appears connected in the status row.  This mirrors the
+            # monitor's ensure_forward() and is needed because
+            # on_select_device only sets the serial but does not
+            # set up the host-side socket forward.
+            try:
+                run_adb(["forward", "--remove",
+                         f"localabstract:{HOST_SOCKET}"], timeout=4)
+                rc, _out, _err = run_adb(
+                    ["forward", f"localabstract:{HOST_SOCKET}",
+                     f"localabstract:{DEVICE_SOCKET}"],
+                    timeout=6,
+                )
+                if rc != 0:
+                    _log(f"failed to set up ADB forward (rc={rc}): "
+                         f"{_err or _out or ''}")
+            except Exception as exc:
+                _log(f"error setting up ADB forward: {exc}")
             self._notify("MicSource device selected",
                          f"Now using {self.device_choices[self.device_dropdown.get_selected()][0]}.")
         return False
