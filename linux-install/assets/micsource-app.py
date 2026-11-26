@@ -1558,7 +1558,8 @@ class MicSourceApp(Adw.Application):
         self._run_cli_async(["device-select", serial], self._device_selected)
 
     def _device_selected(self, code, output):
-        self.log_line(output or "Device selection saved.")
+        global SERIAL
+        self.log_line(output or "Device selection Saved.")
         if code:
             self._error_dialog("Could not select device", output)
         else:
@@ -1568,8 +1569,13 @@ class MicSourceApp(Adw.Application):
             # appears connected in the status row.  This mirrors the
             # monitor's ensure_forward() and is needed because
             # on_select_device only sets the serial but does not
-            # set up the host-side socket forward.
+            # set up the host-side socket forward.  Clear the serial
+            # for the forward commands so adb resolves the connected
+            # device without a forced serial (wireless serials such as
+            # "ip:port" do not resolve via -s for forward).
             try:
+                saved_serial = SERIAL
+                SERIAL = None
                 run_adb(["forward", "--remove",
                          f"localabstract:{HOST_SOCKET}"], timeout=4)
                 rc, _out, _err = run_adb(
@@ -1577,6 +1583,7 @@ class MicSourceApp(Adw.Application):
                      f"localabstract:{DEVICE_SOCKET}"],
                     timeout=6,
                 )
+                SERIAL = saved_serial
                 if rc != 0:
                     _log(f"failed to set up ADB forward (rc={rc}): "
                          f"{_err or _out or ''}")

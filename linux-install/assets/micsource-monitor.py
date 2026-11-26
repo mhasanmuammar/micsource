@@ -156,11 +156,15 @@ def socket_forwarded():
 
 def ensure_forward():
     """(Re)establish the host/socket forward. Returns (ok, stderr)."""
+    global SERIAL
+    saved_serial = SERIAL
+    SERIAL = None
     run_adb(["forward", "--remove", f"localabstract:{HOST_SOCKET}"], timeout=4)
     rc, _out, err = run_adb(
         ["forward", f"localabstract:{HOST_SOCKET}", f"localabstract:{DEVICE_SOCKET}"],
         timeout=6,
     )
+    SERIAL = saved_serial
     return rc == 0, err
 
 
