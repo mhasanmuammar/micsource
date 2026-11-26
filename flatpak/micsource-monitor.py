@@ -157,14 +157,39 @@ def socket_forwarded():
 def ensure_forward():
     """(Re)establish the host/socket forward. Returns (ok, stderr)."""
     global SERIAL
-    saved_serial = SERIAL
-    SERIAL = None
+    # First try without a forced serial (works when only one device)
     run_adb(["forward", "--remove", f"localabstract:{HOST_SOCKET}"], timeout=4)
     rc, _out, err = run_adb(
         ["forward", f"localabstract:{HOST_SOCKET}", f"localabstract:{DEVICE_SOCKET}"],
         timeout=6,
     )
-    SERIAL = saved_serial
+    if rc == 0:
+        return True, ""
+    # If multiple devices, the error is "more than one device/emulator";
+    # retry with the selected serial. Wireless serials (ip:port) can fail
+    # with "device not found" for forward; fall back to USB serial if
+    # another device is online.
+    lowered = (err or _out or "").lower()
+    if "more than one" in lowered or "device not found" in lowered:
+        saved = SERIAL
+        # Try USB serial if different and online
+        try:
+            rc2, out2, _ = run_adb(["devices"], timeout=4)
+            if rc2 == 0:
+                for line in out2.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] == "device" and parts[0] != SERIAL:
+                        SERIAL = parts[0]
+                        rc, _out, err = run_adb(
+                            ["forward", f"localabstract:{HOST_SOCKET}",
+                             f"localabstract:{DEVICE_SOCKET}"],
+                            timeout=6,
+                        )
+                        if rc == 0:
+                            return True, ""
+                        break
+        finally:
+            SERIAL = saved
     return rc == 0, err
 
 
