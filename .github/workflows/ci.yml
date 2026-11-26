@@ -93,7 +93,17 @@ jobs:
           flatpak install -y --user flathub org.gnome.Platform//47 org.gnome.Sdk//47
 
       - name: Build Flatpak
-        run: flatpak-builder --user --install --force-clean builddir flatpak/io.github.mhasanmuammar.MicSource.yml
+        run: flatpak-builder --repo=repo --user --install --force-clean builddir flatpak/io.github.mhasanmuammar.MicSource.yml
+
+      - name: Build Flatpak bundle
+        run: |
+          flatpak build-bundle repo "dist/micsource-flatpak.flatpak" io.github.mhasanmuammar.MicSource
+
+      - name: Upload Flatpak bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: micsource-flatpak
+          path: dist/micsource-flatpak.flatpak
 
       - name: Verify Flatpak app ID
         run: flatpak run io.github.mhasanmuammar.MicSource --version 2>/dev/null || true
