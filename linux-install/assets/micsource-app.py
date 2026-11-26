@@ -1448,20 +1448,28 @@ class MicSourceApp(Adw.Application):
         self.btn_service.set_label(
             "Stopping…" if verb == "stop" else "Starting…")
         self.log_line(f"service: {verb}…")
-        if verb == "start":
-            args = ["enable", "--now", "--quiet"]
-        else:
-            args = ["stop"]
 
         def worker():
             ok = False
             out = ""
             try:
-                proc = subprocess.run(
-                    ["systemctl", "--user", *args, SYSTEMD_UNIT],
-                    capture_output=True, text=True, timeout=15)
-                ok = proc.returncode == 0
-                out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+                if not self._systemd_available():
+                    # Flatpak sandbox: no systemd; supervise the monitor
+                    # as a supervised child process instead.
+                    if verb == "start":
+                        ok, out = self._start_monitor()
+                    else:
+                        self._stop_monitor()
+                        ok = True
+                        out = "monitor stopped"
+                else:
+                    args = ["enable", "--now", "--quiet"] \
+                        if verb == "start" else ["stop"]
+                    proc = subprocess.run(
+                        ["systemctl", "--user", *args, SYSTEMD_UNIT],
+                        capture_output=True, text=True, timeout=15)
+                    ok = proc.returncode == 0
+                    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
             except FileNotFoundError:
                 out = "systemctl not found on this system"
             except Exception as exc:

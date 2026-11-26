@@ -283,7 +283,15 @@ wireless_discover() {
 }
 
 service_start() {
-    if have_cmd systemctl; then
+    if [[ -n "${FLATPAK_ID:-}" ]]; then
+        # Flatpak sandbox: no systemd; run the monitor directly.
+        if [[ ! -f "${MONITOR_PATH}" ]]; then
+            err "Monitor not installed; run install.sh first."
+            exit 1
+        fi
+        "${MONITOR_PATH}" >/dev/null 2>&1 &
+        info "Monitor started in the background (Flatpak sandbox)."
+    elif have_cmd systemctl; then
         if [[ ! -f "${SYSTEMD_UNIT}" ]]; then
             err "Service not installed; run install.sh first."
             exit 1
@@ -302,13 +310,38 @@ service_start() {
 }
 
 service_stop() {
-    if have_cmd systemctl; then
+    if [[ -n "${FLATPAK_ID:-}" ]]; then
+        # Flatpak sandbox: no systemd; stop via control socket + pkill.
+        if [[ -S "${CTL_SOCK}" ]]; then
+            python3 -c '
+import socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(2)
+    s.connect(sys.argv[1])
+    s.sendall(b"status")
+    s.close()
+except Exception:
+    pass
+' "${CTL_SOCK}" 2>/dev/null || true
+        fi
+        if have_cmd pkill && [[ -f "${MONITOR_PATH}" ]]; then
+            pkill -f -- "${MONITOR_PATH}" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null || break
+                sleep 1
+            done
+            if pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null; then
+                warn "monitor did not exit; sending SIGKILL"
+                pkill -9 -f -- "${MONITOR_PATH}" 2>/dev/null || true
+            fi
+        fi
+        info "Monitor stopped."
+    elif have_cmd systemctl; then
         systemctl --user stop "${APP_NAME}.service" 2>/dev/null || true
     fi
     if have_cmd pkill && [[ -f "${MONITOR_PATH}" ]]; then
         pkill -f -- "${MONITOR_PATH}" 2>/dev/null || true
-        # Let the monitor exit gracefully first: on SIGTERM it unloads the
-        # virtual mic sources and player processes before dying.
         for _ in 1 2 3 4 5 6 7 8 9 10; do
             pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null || break
             sleep 1
