@@ -95,6 +95,9 @@ jobs:
       - name: Build Flatpak
         run: flatpak-builder --repo=repo --user --install --force-clean builddir flatpak/io.github.mhasanmuammar.MicSource.yml
 
+      - name: Create dist directory
+        run: mkdir -p dist
+
       - name: Build Flatpak bundle
         run: |
           flatpak build-bundle repo "dist/micsource-flatpak.flatpak" io.github.mhasanmuammar.MicSource
