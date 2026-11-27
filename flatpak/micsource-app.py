@@ -118,6 +118,9 @@ def _load_config():
     global ANDROID_PKG, DEVICE_SOCKET
     adb_path = ""
     server_port = str(DEFAULT_SERVER_PORT)
+    # The environment wins over config.ini: the Flatpak wrapper pins the
+    # sandbox to its own server so a config file copied from the host can
+    # never make it talk to the host's ADB (5038) by accident.
     env_port = os.environ.get("MICSOURCE_ADB_SERVER_PORT", "").strip()
     if env_port:
         server_port = env_port
@@ -129,7 +132,8 @@ def _load_config():
     try:
         parser.read(CONFIG_PATH)
         adb_path = parser.get("adb", "adb_path", fallback="").strip()
-        server_port = parser.get("adb", "server_port", fallback=server_port).strip()
+        if not env_port:
+            server_port = parser.get("adb", "server_port", fallback=server_port).strip()
         serial = parser.get("device", "serial", fallback="").strip()
         host_socket = parser.get("socket", "host_socket_name", fallback="").strip()
         android_pkg = parser.get("android", "package", fallback=android_pkg).strip()
@@ -191,9 +195,9 @@ def _run_cmd(args, timeout=10):
         return 1, str(exc)
 
 
-def run_adb(args, timeout=5):
-    """Run adb; return (rc, stdout, stderr). Never raises."""
-    cmd = adb_command(ADB_CMD, ADB_SERVER_PORT, args, SERIAL)
+def _run_adb(args, timeout, serial):
+    """Run adb with an optional device serial; never raises."""
+    cmd = adb_command(ADB_CMD, ADB_SERVER_PORT, args, serial)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if proc.returncode:
@@ -209,19 +213,34 @@ def run_adb(args, timeout=5):
         return 1, "", str(exc)
 
 
+def run_adb(args, timeout=5):
+    return _run_adb(args, timeout, SERIAL)
+
+
+def run_adb_all(args, timeout=5):
+    """Run an ADB command without filtering by the selected serial."""
+    return _run_adb(args, timeout, None)
+
+
 def device_online():
     rc, out, _err = run_adb(["get-state"], timeout=3)
+    if rc != 0 and SERIAL:
+        # A stale wireless serial must not hide an otherwise connected phone.
+        rc, out, _err = run_adb_all(["get-state"], timeout=3)
     return rc == 0 and out.strip() == "device"
 
 
 def socket_forwarded():
-    rc, out, _err = run_adb(["forward", "--list"], timeout=3)
+    # The monitor may have created this forward without -s (or through an
+    # alternate transport alias). Inspect the server-wide list so status
+    # agrees with the forward the audio pump actually uses.
+    rc, out, _err = run_adb_all(["forward", "--list"], timeout=3)
     return rc == 0 and (f"localabstract:{HOST_SOCKET}" in out)
 
 
 def ensure_forward():
-    run_adb(["forward", "--remove", f"localabstract:{HOST_SOCKET}"], timeout=3)
-    rc, _out, err = run_adb(
+    run_adb_all(["forward", "--remove", f"localabstract:{HOST_SOCKET}"], timeout=3)
+    rc, _out, err = run_adb_all(
         ["forward", f"localabstract:{HOST_SOCKET}", f"localabstract:{DEVICE_SOCKET}"],
         timeout=5,
     )
@@ -1480,6 +1499,13 @@ class MicSourceApp(Adw.Application):
 
     def _service_done(self, verb, ok, out):
         self._service_busy = False
+        if ok:
+            # Keep the application (and therefore the supervised monitor)
+            # alive after the window is closed, until Stop is pressed.
+            if verb == "start":
+                self._hold()
+            else:
+                self._release()
         if self.window and self.window.get_mapped():
             self._refresh()
         self.log_line(f"service {verb}: {'ok' if ok else 'FAILED'}"
@@ -1586,8 +1612,20 @@ class MicSourceApp(Adw.Application):
         if code:
             self._error_dialog("Wireless pairing failed", output or "Check that the temporary pairing address and code are current.")
         else:
-            self._notify("Phone paired",
-                         "Now connect with the separate wireless debugging address.")
+            _load_config()
+            on_refresh = getattr(self, "on_refresh_devices", None)
+            if on_refresh is not None:
+                on_refresh(None)
+            self._refresh()
+            connected = ("Selected device" in output
+                         or "Wireless debugging is connected" in output)
+            if connected:
+                self._notify("Phone paired and connected",
+                             "Audio socket forwarding is active.")
+            else:
+                self._notify("Phone paired",
+                             "Keep Wireless debugging on, then use Discover "
+                             "and Connect with the connection address.")
         return False
 
     def on_wireless_connect(self, _btn):
@@ -1602,6 +1640,7 @@ class MicSourceApp(Adw.Application):
             self._error_dialog("Wireless connection failed", output or "Check the connection address, network, and phone authorization.")
         else:
             _load_config()
+            self.on_refresh_devices(None)
             self._refresh()
             self._notify("Phone connected over Wi-Fi",
                          "Audio socket forwarding is active.")
@@ -1641,6 +1680,7 @@ class MicSourceApp(Adw.Application):
             self._error_dialog("Could not disconnect device", output)
         else:
             _load_config()
+            self.on_refresh_devices(None)
             self._refresh()
             self._notify("Wi-Fi device disconnected",
                          "MicSource is no longer connected to that address.")

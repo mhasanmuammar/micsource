@@ -8,8 +8,10 @@
 //   * pill click = start/stop the background service
 //   * pill chevron = expandable menu with Device + Monitoring status
 //     rows (same information as the control window) and actions.
-// Status is polled through the micsource CLI (async subprocess, no adb
-// socket poking from the shell main loop).
+//
+// The control window owns the monitor in the Flatpak sandbox, so the
+// extension talks to it over D-Bus.  When no D-Bus name is present (a host
+// install that has not started the app yet) it falls back to the CLI.
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
@@ -18,7 +20,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
-const SERVICE = 'micsource.service';
+const BUS_NAME = 'io.github.mhasanmuammar.MicSource';
+const OBJECT_PATH = '/io/github/mhasanmuammar/MicSource';
+const CONTROL_IFACE = BUS_NAME + '.Control';
+const CLI = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'share',
+    'micsource', 'micsource']);
 
 const MicSourceToggle = GObject.registerClass({
     GTypeName: 'MicSourceToggle',
@@ -73,7 +79,8 @@ const MicSourceToggle = GObject.registerClass({
 
         this._monitoring = false;   // monitor answered "status"
         this._device = false;       // phone link seen
-        this._svc = null;           // systemd unit state (may be null)
+        this._svc = null;           // service state (may be null)
+        this._name = '';
         this._ext = ext;            // exposes the fast re-poll
 
         // Clicking the pill toggles the service; the chevron opens the
@@ -82,12 +89,11 @@ const MicSourceToggle = GObject.registerClass({
     }
 
     _refreshSoon() {
-        if (this._ext && this._ext._refreshNext) {
+        if (this._ext && this._ext._refreshNext)
             this._ext._refreshNext();
-        }
     }
 
-    // Called by the extension with a parsed CLI `status` output.
+    // Called by the extension with a status snapshot.
     apply(svc, device, monitoring, name) {
         this._svc = svc;
         this._device = device;
@@ -134,28 +140,16 @@ const MicSourceToggle = GObject.registerClass({
     }
 
     _toggleService() {
-        try {
-            const active = this._monitoring || this._svc === 'active';
-            const verb = active ? 'stop' : 'start';
-            const cli = GLib.build_filenamev([GLib.get_home_dir(),
-                '.local', 'share', 'micsource', 'micsource']);
-            log('MicSource: pill click -> service ' + verb);
-            Gio.Subprocess.new([cli, verb], Gio.SubprocessFlags.NONE);
-        } catch (e) {
-            console.error(`MicSource: toggle failed: ${e}`);
-        }
+        const active = this._monitoring || this._svc === 'active';
+        const verb = active ? 'stop' : 'start';
+        log('MicSource: pill click -> service ' + verb);
+        this._ext._serviceAction(verb);
         // ~1 s re-poll grounds the pill in the real service state
         this._refreshSoon();
     }
 
     _openWindow() {
-        const cli = GLib.build_filenamev([GLib.get_home_dir(),
-            '.local', 'share', 'micsource', 'micsource']);
-        try {
-            Gio.Subprocess.new([cli, 'window'], Gio.SubprocessFlags.NONE);
-        } catch (e) {
-            console.error(`MicSource: open window failed: ${e}`);
-        }
+        this._ext._showWindow();
     }
 
     destroy() {
@@ -166,6 +160,7 @@ const MicSourceToggle = GObject.registerClass({
 export default class MicSourceExtension extends Extension {
     enable() {
         this._cancellable = new Gio.Cancellable();
+        this._refreshing = false;
 
         this._toggle = new MicSourceToggle(this);
         const indicator = new QuickSettings.SystemIndicator();
@@ -188,14 +183,116 @@ export default class MicSourceExtension extends Extension {
 
     // fast, deduplicated re-poll after a user action (pill click etc.)
     _refreshNext() {
-        if (this._soon) {
+        if (this._soon)
             GLib.source_remove(this._soon);
-        }
         this._soon = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
             this._soon = null;
             this._refresh();
             return GLib.SOURCE_REMOVE;
         });
+    }
+
+    // Call the app's Control interface.  `callback(result)` receives the
+    // GLib.Variant reply or null; status polls use NO_AUTO_START so the
+    // shell never spawns a background app just to paint the pill.
+    _dbusCall(method, params, flags, callback) {
+        try {
+            Gio.DBus.session.call(
+                BUS_NAME, OBJECT_PATH, CONTROL_IFACE, method, params,
+                null, flags, 3000, this._cancellable,
+                (connection, res) => {
+                    if (!this._cancellable ||
+                        this._cancellable.is_cancelled())
+                        return;
+                    try {
+                        callback(connection.call_finish(res));
+                    } catch (e) {
+                        callback(null);
+                    }
+                });
+        } catch (e) {
+            console.error(`MicSource: D-Bus ${method} failed: ${e}`);
+            callback(null);
+        }
+    }
+
+    _applyStatus(status) {
+        const svc = typeof status.service === 'string'
+            ? status.service : null;
+        const device = !!status.device;
+        const monitoring = !!status.monitoring;
+        const name = typeof status.name === 'string' ? status.name : '';
+        if (this._toggle && !this._cancellable.is_cancelled())
+            this._toggle.apply(svc, device, monitoring, name);
+    }
+
+    _refresh() {
+        if (this._refreshing)
+            return;
+        this._refreshing = true;
+        this._dbusCall('GetStatus', null, Gio.DBusCallFlags.NO_AUTO_START,
+            (result) => {
+                this._refreshing = false;
+                if (!result) {
+                    this._refreshFromCli();
+                    return;
+                }
+                try {
+                    const [status] = result.deepUnpack();
+                    this._applyStatus(status || {});
+                } catch (e) {
+                    console.error(`MicSource: bad status reply: ${e}`);
+                    this._refreshFromCli();
+                }
+            });
+    }
+
+    // Host fallback: query the installed CLI when the app is not running.
+    _refreshFromCli() {
+        this._spawnGet([CLI, 'status'], (out) => {
+            let svc = null;
+            let device = false;
+            let monitoring = false;
+
+            const m = out.match(/monitor:\s*device=(\d+)\s+forward=/);
+            if (m) { monitoring = true; device = m[1] === '1'; }
+
+            const s = out.match(/systemd unit:\s*([A-Za-z-]+)/);
+            if (s) svc = s[1];
+
+            const d = out.match(/adb device state:\s*([A-Za-z]+)/);
+            if (d) device = device || d[1].toLowerCase() === 'device';
+
+            const nm = out.match(/monitor:[^\n]*\bname=([^\n\r]+)/);
+            const name = nm ? nm[1].trim() : '';
+
+            if (this._toggle && !this._cancellable.is_cancelled())
+                this._toggle.apply(svc, device, monitoring, name);
+        });
+    }
+
+    _serviceAction(verb) {
+        const method = verb === 'stop' ? 'Stop' : 'Start';
+        this._dbusCall(method, null, Gio.DBusCallFlags.NONE, (result) => {
+            if (!result)
+                this._spawn([CLI, verb]);
+        });
+    }
+
+    _showWindow() {
+        this._dbusCall('ShowWindow', null, Gio.DBusCallFlags.NONE,
+            (result) => {
+                if (!result)
+                    this._spawn([CLI, 'window']);
+            });
+    }
+
+    _spawn(argv) {
+        try {
+            Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            console.error(`MicSource: spawn ${argv[0]} failed: ${e}`);
+        }
     }
 
     _spawnGet(argv, callback) {
@@ -219,33 +316,6 @@ export default class MicSourceExtension extends Extension {
             console.error(`MicSource: spawn failed: ${e}`);
             callback('');
         }
-    }
-
-    _refresh() {
-        const cli = GLib.build_filenamev([GLib.get_home_dir(),
-            '.local', 'share', 'micsource', 'micsource']);
-        this._spawnGet([cli, 'status'], (out) => {
-            let svc = null;
-            let device = false;
-            let monitoring = false;
-
-            const m = out.match(/monitor:\s*device=(\d+)\s+forward=/);
-            if (m) { monitoring = true; device = m[1] === '1'; }
-
-            const s = out.match(/systemd unit:\s*([A-Za-z-]+)/);
-            if (s) svc = s[1];
-
-            const d = out.match(/adb device state:\s*([A-Za-z]+)/);
-            if (d) device = device || d[1].toLowerCase() === 'device';
-
-            // Device model reported by the monitor (name=Pixel 8).
-            const nm = out.match(/monitor:[^\n]*\bname=([^\n\r]+)/);
-            const name = nm ? nm[1].trim() : '';
-
-            if (this._toggle && !this._cancellable.is_cancelled()) {
-                this._toggle.apply(svc, device, monitoring, name);
-            }
-        });
     }
 
     disable() {

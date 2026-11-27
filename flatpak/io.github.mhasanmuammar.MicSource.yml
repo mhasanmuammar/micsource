@@ -1,6 +1,6 @@
 id: io.github.mhasanmuammar.MicSource
 runtime: org.gnome.Platform
-runtime-version: '47'
+runtime-version: '51'
 sdk: org.gnome.Sdk
 command: micsource-gui
 
@@ -21,11 +21,11 @@ modules:
   - name: adb
     buildsystem: simple
     build-commands:
-      - unzip -o platform-tools_r34.0.5-linux.zip -d platform-tools && install -Dm755 platform-tools/platform-tools/adb /app/bin/adb
+      - unzip -o platform-tools_r37.0.1-linux.zip -d platform-tools && install -Dm755 platform-tools/platform-tools/adb /app/bin/adb
     sources:
       - type: file
-        url: https://dl.google.com/android/repository/platform-tools_r34.0.5-linux.zip
-        sha256: 362f8f6218af0f4c61e5aaafb8e255a426c7a0ee00127dfab7371775081d3124
+        url: https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip
+        sha256: d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1
   - name: micsource
     buildsystem: simple
     build-commands:
@@ -41,6 +41,7 @@ modules:
       - mkdir -p /app/share/icons/hicolor/scalable/apps
       - install -Dm644 gnome/* /app/share/micsource/gnome/
       - install -Dm644 io.github.mhasanmuammar.MicSource.desktop /app/share/applications/io.github.mhasanmuammar.MicSource.desktop
+      - install -Dm644 io.github.mhasanmuammar.MicSource.service /app/share/dbus-1/services/io.github.mhasanmuammar.MicSource.service
       - install -Dm644 io.github.mhasanmuammar.MicSource.metainfo.xml /app/share/metainfo/io.github.mhasanmuammar.MicSource.metainfo.xml
       - install -Dm644 io.github.mhasanmuammar.MicSource.svg /app/share/icons/hicolor/scalable/apps/io.github.mhasanmuammar.MicSource.svg
     sources:

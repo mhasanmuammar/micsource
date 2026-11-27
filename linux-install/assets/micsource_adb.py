@@ -31,6 +31,8 @@ def _default_server_port():
             return validate_server_port(raw)
         except ValueError:
             pass
+    if os.environ.get("FLATPAK_ID"):
+        return 5039
     return 5038
 
 

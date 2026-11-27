@@ -15,6 +15,7 @@ background monitor service.
 import configparser
 import os
 import subprocess
+import sys
 import threading
 import time
 
@@ -40,17 +41,25 @@ except Exception as exc:  # PyGObject without GLib/Gio
 
 APP_ID = "micsource"
 APP_TITLE = "MicSource"
-DATA_DIR = os.path.expanduser("~/.local/share/micsource")
-CONFIG_DIR = os.path.expanduser("~/.config/micsource")
-CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
-ADB_PATH_FILE = os.path.join(DATA_DIR, "adb.path")
-CLI_PATH = os.path.join(DATA_DIR, "micsource")
+
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from paths import (DATA_DIR, CONFIG_DIR, CONFIG_PATH, ADB_PATH_FILE,
+                      CLI_PATH, ICON_NAME, IS_FLATPAK)
+except Exception:
+    DATA_DIR = os.path.expanduser("~/.local/share/micsource")
+    CONFIG_DIR = os.path.expanduser("~/.config/micsource")
+    CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
+    ADB_PATH_FILE = os.path.join(DATA_DIR, "adb.path")
+    CLI_PATH = os.path.join(DATA_DIR, "micsource")
+    ICON_NAME = "micsource"
+    IS_FLATPAK = False
 
 ANDROID_PKG = "fr.dzx.audiosource"  # Android package (baked into the APK)
 DEVICE_SOCKET = "audiosource"       # Device-side socket (RecordThread)
 DEFAULT_HOST_SOCKET = "micsource"   # Host side of the adb forward
 
-ICON_NAME = "micsource"
 FALLBACK_ICON = "audio-input-microphone"
 SNI_PATH = "/StatusNotifierItem"
 SNI_MENU_PATH = "/StatusNotifierItem/menus/micsource"
@@ -209,13 +218,17 @@ def _load_config():
     global ADB_CMD, ADB_SERVER_PORT, SERIAL, HOST_SOCKET
     adb_path = ""
     server_port = str(DEFAULT_SERVER_PORT)
+    env_port = os.environ.get("MICSOURCE_ADB_SERVER_PORT", "").strip()
+    if env_port:
+        server_port = env_port
     serial = ""
     host_socket = ""
     parser = configparser.ConfigParser()
     try:
         parser.read(CONFIG_PATH)
         adb_path = parser.get("adb", "adb_path", fallback="").strip()
-        server_port = parser.get("adb", "server_port", fallback=server_port).strip()
+        if not env_port:
+            server_port = parser.get("adb", "server_port", fallback=server_port).strip()
         serial = parser.get("device", "serial", fallback="").strip()
         host_socket = parser.get("socket", "host_socket_name", fallback="").strip()
     except Exception:
@@ -470,13 +483,22 @@ class TrayDaemon:
             if action in ("start", "stop"):
                 subprocess.Popen([CLI_PATH, action])
             elif action == "window":
-                app_path = os.path.join(DATA_DIR, "micsource-app.py")
-                if os.path.isfile(app_path):
-                    subprocess.Popen(["python3", app_path])
+                # The CLI knows whether to use D-Bus (Flatpak) or exec the
+                # window directly (host), so prefer it over guessing a path.
+                if os.path.isfile(CLI_PATH):
+                    subprocess.Popen([CLI_PATH, "window"])
                 else:
-                    _log("control window not installed; run install.sh first")
+                    app_path = os.path.join(DATA_DIR, "micsource-app.py")
+                    if os.path.isfile(app_path):
+                        subprocess.Popen([sys.executable, app_path])
+                    else:
+                        _log("control window not installed; run install.sh first")
             elif action == "config":
-                subprocess.Popen(["xdg-open", CONFIG_DIR])
+                try:
+                    Gio.AppInfo.launch_default_for_uri(
+                        GLib.filename_to_uri(CONFIG_DIR, None), None)
+                except GLib.Error as exc:
+                    _log(f"could not open config folder: {exc}")
             elif action == "quit":
                 self.loop.quit()
         except OSError as exc:

@@ -8,5 +8,6 @@ Icon=io.github.mhasanmuammar.MicSource
 Categories=Audio;AudioVideo;Utility;
 Keywords=microphone;mic;phone;audio;
 Terminal=false
+DBusActivatable=true
 StartupNotify=true
 StartupWMClass=io.github.mhasanmuammar.MicSource

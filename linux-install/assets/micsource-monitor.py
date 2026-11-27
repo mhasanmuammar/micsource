@@ -99,13 +99,19 @@ def _load_config():
     global ADB_CMD, ADB_SERVER_PORT, SERIAL, HOST_SOCKET
     adb_path = ""
     server_port = str(DEFAULT_SERVER_PORT)
+    # Environment wins over config.ini (see paths.py): the Flatpak must stay
+    # on its private server even if the config was copied from the host.
+    env_port = os.environ.get("MICSOURCE_ADB_SERVER_PORT", "").strip()
+    if env_port:
+        server_port = env_port
     serial = ""
     host_socket = ""
     parser = configparser.ConfigParser()
     try:
         parser.read(CONFIG_PATH)
         adb_path = parser.get("adb", "adb_path", fallback="").strip()
-        server_port = parser.get("adb", "server_port", fallback=server_port).strip()
+        if not env_port:
+            server_port = parser.get("adb", "server_port", fallback=server_port).strip()
         serial = parser.get("device", "serial", fallback="").strip()
         host_socket = parser.get("socket", "host_socket_name", fallback="").strip()
     except Exception:
@@ -126,9 +132,9 @@ def _load_config():
     HOST_SOCKET = host_socket or DEFAULT_HOST_SOCKET
 
 
-def run_adb(args, timeout=6):
-    """Run adb; return (rc, stdout, stderr). Never raises."""
-    cmd = adb_command(ADB_CMD, ADB_SERVER_PORT, args, SERIAL)
+def _run_adb(args, timeout, serial):
+    """Run adb with an optional device serial; never raises."""
+    cmd = adb_command(ADB_CMD, ADB_SERVER_PORT, args, serial)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if proc.returncode:
@@ -144,22 +150,39 @@ def run_adb(args, timeout=6):
         return 1, "", str(exc)
 
 
+def run_adb(args, timeout=6):
+    return _run_adb(args, timeout, SERIAL)
+
+
+def run_adb_all(args, timeout=6):
+    """Run an ADB command without filtering by the selected serial."""
+    return _run_adb(args, timeout, None)
+
+
+def run_adb_for(serial, args, timeout=6):
+    return _run_adb(args, timeout, serial)
+
+
 def device_online():
     rc, out, _err = run_adb(["get-state"], timeout=4)
+    if rc != 0 and SERIAL:
+        # The selected serial can go stale when a wireless debugging port
+        # changes. With a single connected device, unqualified ADB still
+        # resolves the right transport.
+        rc, out, _err = run_adb_all(["get-state"], timeout=4)
     return rc == 0 and out.strip() == "device"
 
 
 def socket_forwarded():
-    rc, out, _err = run_adb(["forward", "--list"], timeout=4)
+    rc, out, _err = run_adb_all(["forward", "--list"], timeout=4)
     return rc == 0 and (f"localabstract:{HOST_SOCKET}" in out)
 
 
 def ensure_forward():
     """(Re)establish the host/socket forward. Returns (ok, stderr)."""
-    global SERIAL
     # First try without a forced serial (works when only one device)
-    run_adb(["forward", "--remove", f"localabstract:{HOST_SOCKET}"], timeout=4)
-    rc, _out, err = run_adb(
+    run_adb_all(["forward", "--remove", f"localabstract:{HOST_SOCKET}"], timeout=4)
+    rc, _out, err = run_adb_all(
         ["forward", f"localabstract:{HOST_SOCKET}", f"localabstract:{DEVICE_SOCKET}"],
         timeout=6,
     )
@@ -171,25 +194,23 @@ def ensure_forward():
     # another device is online.
     lowered = (err or _out or "").lower()
     if "more than one" in lowered or "device not found" in lowered:
-        saved = SERIAL
-        # Try USB serial if different and online
-        try:
-            rc2, out2, _ = run_adb(["devices"], timeout=4)
-            if rc2 == 0:
-                for line in out2.splitlines():
-                    parts = line.split()
-                    if len(parts) >= 2 and parts[1] == "device" and parts[0] != SERIAL:
-                        SERIAL = parts[0]
-                        rc, _out, err = run_adb(
-                            ["forward", f"localabstract:{HOST_SOCKET}",
-                             f"localabstract:{DEVICE_SOCKET}"],
-                            timeout=6,
-                        )
-                        if rc == 0:
-                            return True, ""
-                        break
-        finally:
-            SERIAL = saved
+        # A wireless device can appear under both its ip:port and mDNS
+        # transport serial. Retry another online transport without mutating
+        # the selected serial used by status and shell commands.
+        rc2, out2, _ = run_adb_all(["devices"], timeout=4)
+        if rc2 == 0:
+            for line in out2.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == "device" and parts[0] != SERIAL:
+                    rc, _out, err = run_adb_for(
+                        parts[0],
+                        ["forward", f"localabstract:{HOST_SOCKET}",
+                         f"localabstract:{DEVICE_SOCKET}"],
+                        timeout=6,
+                    )
+                    if rc == 0:
+                        return True, ""
+                    break
     return rc == 0, err
 
 
@@ -814,6 +835,9 @@ def main_loop():
     stall_ticks = 0
     while running:
         try:
+            # Pick up a device selection / wireless endpoint change without
+            # needing a restart (the Flatpak app supervises this process).
+            _load_config()
             online = device_online()
             forwarded = socket_forwarded() if online else False
             if online:

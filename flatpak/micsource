@@ -23,15 +23,25 @@
 set -euo pipefail
 
 APP_NAME="micsource"
-DATA_DIR="${MICSOURCE_DATA_DIR:-${HOME}/.local/share/micsource}"
-CONFIG_DIR="${MICSOURCE_CONFIG_DIR:-${HOME}/.config/micsource}"
+DATA_DIR="${MICSOURCE_DATA_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/micsource}"
+CONFIG_DIR="${MICSOURCE_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/micsource}"
 TRAY_PATH="${DATA_DIR}/micsource-tray.py"
 MONITOR_PATH="${DATA_DIR}/micsource-monitor.py"
 GUI_PATH="${DATA_DIR}/micsource-gui"
-CTL_SOCK="${MICSOURCE_RUNTIME_DIR:-${DATA_DIR}}/micsource.sock"
+CTL_SOCK="${MICSOURCE_CONTROL_SOCKET:-${DATA_DIR}/micsource.sock}"
 SYSTEMD_UNIT="${HOME}/.config/systemd/user/micsource.service"
 DEVICE_SOCKET="audiosource"      # device-side socket (RecordThread)
 HOST_SOCKET="micsource"          # host side of the adb forward
+
+# Inside the Flatpak every process must use the sandbox-private ADB home.
+# `flatpak run --command=micsource` bypasses the micsource-gui wrapper, so
+# set it here as well; otherwise adb tries (and fails) to write ~/.android.
+if [[ -n "${FLATPAK_ID:-}" ]]; then
+    export ANDROID_USER_HOME="${ANDROID_USER_HOME:-${DATA_DIR}/android}"
+    # `flatpak run --command=micsource` bypasses micsource-gui, so the
+    # wrapper's port export is not inherited. Pin the sandbox server here.
+    export MICSOURCE_ADB_SERVER_PORT="${MICSOURCE_ADB_SERVER_PORT:-5039}"
+fi
 
 info() { printf '[INFO] %s\n' "$*"; }
 ok() { printf '[OK]   %s\n' "$*"; }
@@ -96,12 +106,18 @@ resolve_adb() {
 }
 
 resolve_adb_server_port() {
-    local port="${MICSOURCE_ADB_SERVER_PORT:-5038}"
-    if [[ -f "${CONFIG_DIR}/config.ini" ]]; then
-        port="$(awk -F= '/^[[:space:]]*server_port[[:space:]]*=/ {sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit}' \
+    local port="" configured_port
+    # An explicit environment port always wins: it is how the Flatpak
+    # wrapper pins the sandbox to its own server (5039) even if a config
+    # file was copied from the host installation.
+    if [[ -n "${MICSOURCE_ADB_SERVER_PORT:-}" ]]; then
+        port="${MICSOURCE_ADB_SERVER_PORT}"
+    elif [[ -f "${CONFIG_DIR}/config.ini" ]]; then
+        configured_port="$(awk -F= '/^[[:space:]]*server_port[[:space:]]*=/ {sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit}' \
             "${CONFIG_DIR}/config.ini" | head -n 1)"
-        port="${port:-5038}"
+        port="${configured_port}"
     fi
+    port="${port:-5038}"
     if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
         err "Invalid [adb] server_port '${port}'; 5037 is reserved for system ADB, choose another port from 1024-65535."
         return 1
@@ -252,7 +268,49 @@ wireless_pair() {
         result=$?
     fi
     unset pairing_code
-    return "${result}"
+    if ((result != 0)); then
+        return "${result}"
+    fi
+
+    # Pairing uses a temporary port. The device only appears in `adb devices`
+    # after connecting to the *separate* _adb-tls-connect service, so do that
+    # automatically instead of leaving the user on a "paired but nothing
+    # happened" screen. Discovery can take a few seconds right after pairing.
+    local pair_host="${endpoint%:*}" connect_endpoint=""
+    if connect_endpoint="$(discover_connect_endpoint "${pair_host}")"; then
+        info "Paired; connecting to ${connect_endpoint}…"
+        if wireless_connect "${connect_endpoint}"; then
+            ok "Wireless debugging is connected."
+        else
+            warn "Paired, but the automatic connect failed."
+            warn "Run: micsource wireless-connect ${connect_endpoint}"
+        fi
+    else
+        warn "Paired, but no _adb-tls-connect service was discovered yet."
+        warn "Keep Wireless debugging on, then run: micsource wireless-discover"
+    fi
+}
+
+discover_connect_endpoint() {
+    # Print the first _adb-tls-connect endpoint, optionally filtered by host.
+    local want_host="${1:-}" output line endpoint attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        output="$(adb_run_all mdns services 2>/dev/null || true)"
+        while IFS= read -r line; do
+            [[ "${line}" == *"_adb-tls-connect._tcp"* ]] || continue
+            endpoint="${line##*$'\t'}"
+            endpoint="${endpoint%%[[:space:]]*}"
+            if [[ -n "${want_host}" && "${endpoint}" != "${want_host}":* ]]; then
+                continue
+            fi
+            if [[ "${endpoint}" =~ ^[0-9.]+:[0-9]+$ || "${endpoint}" =~ ^\[.+\]:[0-9]+$ ]]; then
+                printf '%s\n' "${endpoint}"
+                return 0
+            fi
+        done <<<"${output}"
+        sleep 1
+    done
+    return 1
 }
 
 wireless_connect() {
@@ -260,8 +318,10 @@ wireless_connect() {
     validate_endpoint "${endpoint}" || return
     adb_run_all connect "${endpoint}" || return
     select_device "${endpoint}"
-    adb_run forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
-    adb_run forward "localabstract:${HOST_SOCKET}" "localabstract:${DEVICE_SOCKET}"
+    adb_run_all forward --remove "localabstract:${HOST_SOCKET}" >/dev/null 2>&1 || true
+    if ! adb_run_all forward "localabstract:${HOST_SOCKET}" "localabstract:${DEVICE_SOCKET}"; then
+        warn "Wireless ADB connected; the running monitor will retry the audio forward."
+    fi
 }
 
 wireless_disconnect() {
@@ -282,15 +342,32 @@ wireless_discover() {
     adb_run_all mdns services
 }
 
+app_action() {
+    # Drive the running app (or D-Bus-activate it) instead of spawning a
+    # monitor in this short-lived sandbox, which would die with the CLI.
+    local action="$1"
+    python3 - "${action}" <<'PY'
+import sys
+from gi.repository import Gio, GLib
+action = sys.argv[1]
+try:
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    bus.call_sync(
+        "io.github.mhasanmuammar.MicSource",
+        "/io/github/mhasanmuammar/MicSource",
+        "org.freedesktop.Application", "ActivateAction",
+        GLib.Variant("(sava{sv})", (action, [], {})),
+        None, Gio.DBusCallFlags.NONE, 15000, None)
+except Exception as exc:
+    print(f"[ERR]  could not reach the MicSource app: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 service_start() {
     if [[ -n "${FLATPAK_ID:-}" ]]; then
-        # Flatpak sandbox: no systemd; run the monitor directly.
-        if [[ ! -f "${MONITOR_PATH}" ]]; then
-            err "Monitor not installed; run install.sh first."
-            exit 1
-        fi
-        "${MONITOR_PATH}" >/dev/null 2>&1 &
-        info "Monitor started in the background (Flatpak sandbox)."
+        # Flatpak: the app owns the monitor; ask it to start/stop.
+        app_action start && info "Monitor service started."
     elif have_cmd systemctl; then
         if [[ ! -f "${SYSTEMD_UNIT}" ]]; then
             err "Service not installed; run install.sh first."
@@ -311,33 +388,10 @@ service_start() {
 
 service_stop() {
     if [[ -n "${FLATPAK_ID:-}" ]]; then
-        # Flatpak sandbox: no systemd; stop via control socket + pkill.
-        if [[ -S "${CTL_SOCK}" ]]; then
-            python3 -c '
-import socket, sys
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(2)
-    s.connect(sys.argv[1])
-    s.sendall(b"status")
-    s.close()
-except Exception:
-    pass
-' "${CTL_SOCK}" 2>/dev/null || true
-        fi
-        if have_cmd pkill && [[ -f "${MONITOR_PATH}" ]]; then
-            pkill -f -- "${MONITOR_PATH}" 2>/dev/null || true
-            for _ in 1 2 3 4 5 6 7 8 9 10; do
-                pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null || break
-                sleep 1
-            done
-            if pkill -0 -f -- "${MONITOR_PATH}" 2>/dev/null; then
-                warn "monitor did not exit; sending SIGKILL"
-                pkill -9 -f -- "${MONITOR_PATH}" 2>/dev/null || true
-            fi
-        fi
-        info "Monitor stopped."
-    elif have_cmd systemctl; then
+        app_action stop && info "Monitor stopped."
+        return 0
+    fi
+    if have_cmd systemctl; then
         systemctl --user stop "${APP_NAME}.service" 2>/dev/null || true
     fi
     if have_cmd pkill && [[ -f "${MONITOR_PATH}" ]]; then
@@ -394,8 +448,11 @@ except Exception:
     fi
     resolve_adb_server_port >/dev/null || return 2
     state="$(adb_run get-state || true)"
+    if [[ -z "${state}" ]]; then
+        state="$(adb_run_all get-state || true)"
+    fi
     info "adb device state: ${state:-none}"
-    forward_list="$(adb_run forward --list || true)"
+    forward_list="$(adb_run_all forward --list || true)"
     if [[ "$forward_list" == *localabstract:"${HOST_SOCKET}"* ]]; then
         info "socket forward: active (localabstract:${HOST_SOCKET} -> localabstract:${DEVICE_SOCKET})"
     else
@@ -412,6 +469,10 @@ one_shot_run() {
 }
 
 launch_window() {
+    if [[ -n "${FLATPAK_ID:-}" ]]; then
+        app_action show
+        return 0
+    fi
     if [[ ! -f "${GUI_PATH}" ]]; then
         err "Control window not installed; run install.sh first."
         exit 1

@@ -54,6 +54,14 @@ RUNTIME_DIR = _env_path("MICSOURCE_RUNTIME_DIR",
 CACHE_DIR = _env_path("MICSOURCE_CACHE_DIR",
                       os.path.join(CACHE_HOME, "micsource"))
 
+if IS_FLATPAK:
+    # Keep adb's RSA keys inside the sandbox. The GUI wrapper exports this
+    # too, but the CLI (`flatpak run --command=micsource`) and the monitor
+    # must agree on the same key store.
+    os.environ.setdefault("ANDROID_USER_HOME",
+                          os.path.join(DATA_DIR, "android"))
+    os.environ.setdefault("MICSOURCE_ADB_SERVER_PORT", "5039")
+
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
 ADB_PATH_FILE = os.path.join(DATA_DIR, "adb.path")
 # Control socket lives with the rest of the private sandbox state; the
