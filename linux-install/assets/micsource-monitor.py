@@ -214,6 +214,53 @@ def ensure_forward():
     return rc == 0, err
 
 
+def _write_serial(serial):
+    """Persist the selected transport so status/shell commands use it."""
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(CONFIG_PATH)
+    except Exception:
+        pass
+    if not parser.has_section("device"):
+        parser.add_section("device")
+    parser.set("device", "serial", serial)
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(CONFIG_PATH, "w") as fh:
+            parser.write(fh)
+    except OSError as exc:
+        _log(f"could not save serial: {exc}")
+
+
+def reconnect_wireless():
+    """Connect to an mDNS-discovered phone when the saved serial is stale.
+
+    Android rotates the wireless debugging port; the saved ip:port then
+    stops resolving even though the phone is on the network.  The monitor
+    uses the same _adb-tls-connect advertisement the CLI discovers.
+    """
+    global SERIAL
+    rc, out, _err = run_adb_all(["mdns", "services"], timeout=6)
+    if rc != 0:
+        return False
+    endpoints = []
+    for line in out.splitlines():
+        if "_adb-tls-connect._tcp" not in line:
+            continue
+        endpoint = line.rsplit("\t", 1)[-1].strip().split()[0]
+        if re.match(r"^(\[[0-9a-fA-F:]+\]|[0-9.]+):[0-9]+$", endpoint):
+            endpoints.append(endpoint)
+    for endpoint in endpoints:
+        rc, out2, err = run_adb_all(["connect", endpoint], timeout=10)
+        if rc == 0 and "connected to" in (out2 or "").lower():
+            _log(f"reconnected to {endpoint}")
+            SERIAL = endpoint
+            _write_serial(endpoint)
+            return True
+        _log(f"reconnect {endpoint} failed: {err or out2}".strip())
+    return False
+
+
 def start_device_service():
     run_adb(["shell", "am", "force-stop", ANDROID_PKG], timeout=8)
     rc, _out, err = run_adb(
@@ -243,6 +290,10 @@ _pumping = False
 _pump_epoch = 0
 _pcm_bytes = 0
 audio_procs = []
+# PIDs of the players that must stay on the phone-out sink (virtual mic).
+# Speaker playback intentionally targets the desktop default sink, so the
+# route guard must not "repair" it back to phone-out.
+_vmic_pids = set()
 
 # Latency governor. The player pipe is the only unbounded queue between the
 # network and the speakers: if a Wi-Fi burst fills it, the input rate equals
@@ -541,6 +592,7 @@ def start_audio():
             live = _live_players(audio_procs)
             if live:
                 audio_procs[:] = live
+                _vmic_pids.intersection_update(child.pid for child in live)
                 _vmic_start()
                 return True
             # Every player exited (sink torn down, paplay crash, ...).
@@ -549,6 +601,7 @@ def start_audio():
             _log("all audio players exited; restarting them")
             _pumping = False
             audio_procs.clear()
+            _vmic_pids.clear()
             _pump_epoch += 1
         kids = []
         if _vmic_enabled():
@@ -559,6 +612,7 @@ def start_audio():
                     _log("warning: no paplay found; phone-mic will be silent")
                 else:
                     kids.append(kid)
+                    _vmic_pids.add(kid.pid)
         if _speakers_enabled():
             kid = _spawn_player()
             if kid is None:
@@ -594,6 +648,7 @@ def stop_audio():
             except Exception:
                 pass
     audio_procs.clear()
+    _vmic_pids.clear()
 
 
 def _route_guard():
@@ -631,6 +686,9 @@ def _route_guard():
             kids = list(audio_procs)
         for child in kids:
             if child.poll() is not None:
+                continue
+            if child.pid not in _vmic_pids:
+                # Speaker playback deliberately targets the default sink.
                 continue
             entry = owner.get(child.pid)
             if entry is not None and entry[1] != phone_idx:
@@ -866,7 +924,11 @@ def main_loop():
                 # Try to launch the app on device at most once per ~30 s.
                 if offline_ticks >= 6:
                     offline_ticks = 0
-                    start_device_service()
+                    # A saved wireless endpoint may have expired while the
+                    # phone stayed on the network; reconnect before trying
+                    # to launch the app over a dead serial.
+                    if not reconnect_wireless():
+                        start_device_service()
             _notify_transition((online, forwarded))
         except Exception as exc:
             _log(f"loop error: {exc}")

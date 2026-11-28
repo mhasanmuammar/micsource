@@ -38,6 +38,8 @@ UNIT_FILE="${SYSTEMD_USER_DIR}/${APP_NAME}.service"
 CLI_PATH="${DATA_DIR}/${APP_NAME}"
 ADB_PATH_FILE="${DATA_DIR}/adb.path"
 ADB_BUNDLE_DIR="${DATA_DIR}/adb-bundle"
+APP_ID="io.github.mhasanmuammar.MicSource"
+DBUS_SERVICE_FILE="${HOME}/.local/share/dbus-1/services/${APP_ID}.service"
 PLATFORM_TOOLS_VERSION="37.0.1"
 PLATFORM_TOOLS_SHA256="d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1"
 PLATFORM_TOOLS_SHA1="477254aa5f903c15cf51001717bdf347fb6b53e0"
@@ -483,7 +485,17 @@ Icon=${icon_name}
 Categories=Audio;AudioVideo;Utility;
 Keywords=microphone;mic;phone;audio;
 Terminal=false
+DBusActivatable=true
 DESKEOF
+    # The app owns the monitor and exposes the Control interface; this
+    # service file lets the GNOME extension (or `gdbus`) start it on demand
+    # instead of requiring a running window.
+    mkdir -p "$(dirname "${DBUS_SERVICE_FILE}")"
+    write_or_fail "${DBUS_SERVICE_FILE}" <<DBUSEOF || return 1
+[D-BUS Service]
+Name=${APP_ID}
+Exec=${DATA_DIR}/micsource-gui --gapplication-service
+DBUSEOF
     if have_cmd update-desktop-database; then
         update-desktop-database "${APPS_DIR}" >/dev/null 2>&1 || true
     fi

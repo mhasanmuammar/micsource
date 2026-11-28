@@ -529,6 +529,13 @@ class MicSourceApp(Adw.Application):
     def _action_stop(self, _action, _param):
         self._stop_monitor()
         self._release()
+        GLib.idle_add(self._maybe_quit)
+
+    def _maybe_quit(self):
+        """Leave no headless process behind after Stop from the CLI/extension."""
+        if self.window is None or not self.window.get_visible():
+            self.quit()
+        return False
 
     def _action_show(self, _action, _param):
         self.activate()
@@ -1506,6 +1513,7 @@ class MicSourceApp(Adw.Application):
                 self._hold()
             else:
                 self._release()
+                GLib.idle_add(self._maybe_quit)
         if self.window and self.window.get_mapped():
             self._refresh()
         self.log_line(f"service {verb}: {'ok' if ok else 'FAILED'}"

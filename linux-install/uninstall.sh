@@ -32,6 +32,7 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MONITOR_PATH="${DATA_DIR}/micsource-monitor.py"
 UNIT_FILE="${SYSTEMD_USER_DIR}/${APP_NAME}.service"
 DESKTOP_FILE="${APPS_DIR}/${APP_NAME}.desktop"
+DBUS_SERVICE_FILE="${HOME}/.local/share/dbus-1/services/io.github.mhasanmuammar.MicSource.service"
 ICON_FILE="${ICON_THEME_DIR}/${APP_NAME}.svg"
 SOCK="${DATA_DIR}/micsource.sock"
 CLI_TARGET="${DATA_DIR}/${APP_NAME}"
@@ -139,6 +140,10 @@ fi
 if [[ -f "${DESKTOP_FILE}" ]]; then
     rm -f -- "$DESKTOP_FILE"
     ok "Removed launcher: ${DESKTOP_FILE}"
+fi
+if [[ -f "${DBUS_SERVICE_FILE}" ]]; then
+    rm -f -- "${DBUS_SERVICE_FILE}"
+    ok "Removed D-Bus service: ${DBUS_SERVICE_FILE}"
 fi
 if have_cmd update-desktop-database; then
     update-desktop-database "${APPS_DIR}" 2>/dev/null || true

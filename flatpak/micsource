@@ -218,7 +218,19 @@ validate_endpoint() {
 }
 
 list_devices() {
-    adb_run_all devices -l
+    local output endpoint
+    output="$(adb_run_all devices -l)" || return
+    # Wireless debugging rotates its port, so a previously paired phone can
+    # be alive but absent from `adb devices`. If nothing is listed, try the
+    # mDNS connect endpoint briefly and refresh the list once.
+    if ! awk '$2 == "device" || $2 == "unauthorized" || $2 == "offline" {found=1} END {exit !found}' <<<"${output}"; then
+        endpoint="$(discover_connect_endpoint "" 4 || true)"
+        if [[ -n "${endpoint}" ]]; then
+            adb_run_all connect "${endpoint}" >/dev/null 2>&1 || true
+            output="$(adb_run_all devices -l)" || return
+        fi
+    fi
+    printf '%s\n' "${output}"
 }
 
 select_device() {
@@ -293,8 +305,8 @@ wireless_pair() {
 
 discover_connect_endpoint() {
     # Print the first _adb-tls-connect endpoint, optionally filtered by host.
-    local want_host="${1:-}" output line endpoint attempt
-    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    local want_host="${1:-}" max_attempts="${2:-12}" output line endpoint attempt
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
         output="$(adb_run_all mdns services 2>/dev/null || true)"
         while IFS= read -r line; do
             [[ "${line}" == *"_adb-tls-connect._tcp"* ]] || continue
@@ -339,7 +351,21 @@ wireless_disconnect() {
 }
 
 wireless_discover() {
-    adb_run_all mdns services
+    # ADB's mDNS daemon starts asynchronously with the server; the first
+    # query often returns an empty list even though the phone is visible a
+    # second later. Poll briefly so "Discover" is not a one-shot race.
+    local output="" attempt line found
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        output="$(adb_run_all mdns services 2>&1 || true)"
+        found=0
+        while IFS= read -r line; do
+            [[ "${line}" == *"_adb-tls-connect._tcp"* ||
+               "${line}" == *"_adb-tls-pairing._tcp"* ]] && found=1
+        done <<<"${output}"
+        ((found)) && break
+        sleep 1
+    done
+    printf '%s\n' "${output}"
 }
 
 app_action() {
